@@ -26,32 +26,44 @@ PYTHON_DEPS := $(PACKAGE_CHECK)
 .PHONY: env
 env: .venv pip sandbox
 
+
+
 .venv:
-	python3 -m venv .venv
-	$(PYTHON) -m pip install maturin
+	uv venv .venv --python 3.14
 	
 .PHONY: pip
 pip: $(PYTHON_VENV)
-	$(PYTHON) -m pip install -e .[dev]
+	uv pip install -e .[dev]
+
+.PHONY: sandbox
+sandbox: 
+	. .venv/bin/activate && exec /bin/bash -i
 
 #
 # Formatting
 #
 
 .PHONY: check
-check: ruff_fixes mypy black_fixes dapperdata_fixes tomlsort_fixes
+check: format ruff_fixes ruff_check ty dapperdata_fixes tomlsort_fixes
 
-.PHONY: black_fixes
-black_fixes:
-	$(PYTHON) -m ruff format .
+.PHONY: format
+format: ruff_format ruff_fixes
 
-.PHONY: mypy
-mypy:
-	$(PYTHON) -m mypy src/*
+.PHONY: ruff_format
+ruff_format:
+	$(PYTHON) -m ruff format src
 
 .PHONY: ruff_fixes
 ruff_fixes:
-	$(PYTHON) -m ruff check . --fix
+	$(PYTHON) -m ruff check src --fix-only
+
+.PHONY: ruff_check
+ruff_check:
+	$(PYTHON) -m ruff check src
+
+.PHONY: ty
+ty:
+	$(PYTHON) -m ty check src
 
 .PHONY: dapperdata_fixes
 dapperdata_fixes:
@@ -61,13 +73,16 @@ dapperdata_fixes:
 tomlsort_fixes:
 	$(PYTHON_ENV) toml-sort $$(find . -not -path "./.venv/*" -name "*.toml") -i
 
+.PHONY: spelling
+spelling:
+	$(PYTHON) -m pylint --load-plugins=pylint.extensions.spelling path/to/your/code
 
 #
 # Testing
 #
 
 
-.PHONY: test
+.PHONY: coverage
 test:
 	$(PYTHON) -m coverage run --branch --source src -m unittest discover
 	@$(PYTHON) -m coverage report -m
@@ -77,16 +92,19 @@ test:
 # Packaging
 #
 
-.PHONY: build
-build: $(PACKAGE_CHECK)
-	$(PYTHON) -m build
+.PHONY: docker-build
+docker-build:
+	docker build -t companion .
 
-.PHONY: rust
-rust:
-	$(PYTHON_ENV) maturin develop
+.PHONY: docker-run
+docker-run:
+	docker run -
 
-.PHONY: release
-release:
-	rm -rf rust/target/wheels/*.whl
-	$(PYTHON_ENV) maturin build -r
-	$(PYTHON) -m pip install rust/rust/target/wheels/*.whl
+#
+# Common commands
+#
+
+.PHONY: rmzone
+rmzone:
+	rm -rf resources/triaged_images/*/*Zone.Identifier*;
+	rm -rf resources/triaged_images/*/*/*Zone.Identifier*;

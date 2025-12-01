@@ -1,23 +1,20 @@
 [build-system]
-requires = ["maturin>=1.5,<2.0"]
-build-backend = "maturin"
+requires = ["uv_build >= 0.9.11, <0.10.0"]
+build-backend = "uv_build"
 
 [project]
 authors = [{"name" = "Alexandre Poulin"}]
-description = "WRITE A DESCRIPTION"
-dynamic = ["version"]
+description = "Companion app for Arkham horror 3e from Fantasy Flight games."
 license = {"file" = "LICENSE"}
-name = "$MYPROJECT"
+name = "companion"
 readme = {file = "README.md", content-type = "text/markdown"}
-classifiers = [
-    "Programming Language :: Rust",
-    "Programming Language :: Python :: Implementation :: CPython",
-    "Programming Language :: Python :: Implementation :: PyPy",
-]
-
+requires-python = "==3.14.0"
+version = "0.0.1"
 dependencies = [
   "pydantic~=2.0",
   "pydantic-settings",
+  "fastapi",
+  "uvicorn[standard]"
 ]
 
 [project.optional-dependencies]
@@ -32,25 +29,155 @@ dev = [
   "ruamel.yaml",
   "ruff",
   "toml-sort",
-  "maturin",
+  "ty"
 ]
 
 [project.scripts]
-$MYPROJECT = "$MYPROJECT.__main__:main"
+companion = "companion.__main__:main"
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 90
+include = ["src/coverage/*"]
+exclude_lines = [
+  "pragma: no cover",
+  "if __name__ == .__main__.:",
+  "def __repr__",
+  "def __str__",
+  "raise AssertionError",
+  "raise NotImplementedError",
+  "if typing.TYPE_CHECKING:"
+]
+
+[tool.coverage.run]
+branch = true
+source = ["companion"]
+
+[tool.pylint.'MASTER']
+load-plugins = ["pylint.extensions.spelling"]
+
+[tool.pylint.spelling]
+spelling-dict = "en_US"
+spelling-ignore-words = ["pyproject", "toml", "noqa"]
+spelling-private-dict-file = ".pylint_spelling_wordlist.txt"
 
 [tool.ruff]
-exclude = [".venv"]
 line-length = 120
+indent-width = 4
+target-version = "py314"
+exclude = [".venv"]
 
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+docstring-code-line-length = 120
 
-[tool.maturin]
-python-source = "src"
-manifest-path = "rust/Cargo.toml"
-features = ["pyo3/extension-module"]
-module-name = "$MYPROJECT.extension"
-
-[tool.mypy]
-python_version = "3.11"
-strict = true
-exclude = [
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+  "D203", # or "D211", pick ONE style and ignore the other
+  "D213", # or "D212", pick ONE style and ignore the other
+  "COM812", # conflicts with the formatter
+  "TRY003", # ignore needing to assign a variable for Exceptions
+  "EM101"
 ]
+fixable = ["ALL"]
+unfixable = []
+# dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+per-file-ignores = {}
+
+[tool.ty.environment]
+python-version = "3.14"
+python-platform = "linux"
+
+[[tool.ty.overrides]]
+include = ["src", "tests"]
+rules.deprecated = "error"
+
+[tool.ty.rules]
+byte-string-type-annotation = "error"
+call-non-callable = "error"
+conflicting-argument-forms = "error"
+conflicting-declarations = "error"
+conflicting-metaclass = "error"
+cyclic-class-definition = "error"
+cyclic-type-alias-definition = "error"
+duplicate-base = "error"
+duplicate-kw-only = "error"
+escape-character-in-forward-annotation = "error"
+fstring-type-annotation = "error"
+implicit-concatenated-string-type-annotation = "error"
+inconsistent-mro = "error"
+index-out-of-bounds = "error"
+instance-layout-conflict = "error"
+invalid-argument-type = "error"
+invalid-assignment = "error"
+invalid-attribute-access = "error"
+invalid-await = "error"
+invalid-base = "error"
+invalid-context-manager = "error"
+invalid-declaration = "error"
+invalid-exception-caught = "error"
+invalid-explicit-override = "error"
+invalid-generic-class = "error"
+invalid-key = "error"
+invalid-legacy-type-variable = "error"
+invalid-metaclass = "error"
+invalid-method-override = "error"
+invalid-named-tuple = "error"
+invalid-newtype = "error"
+invalid-overload = "error"
+invalid-parameter-default = "error"
+invalid-paramspec = "error"
+invalid-protocol = "error"
+invalid-raise = "error"
+invalid-return-type = "error"
+invalid-super-argument = "error"
+invalid-syntax-in-forward-annotation = "error"
+invalid-type-alias-type = "error"
+invalid-type-arguments = "error"
+invalid-type-checking-constant = "error"
+invalid-type-form = "error"
+invalid-type-guard-call = "error"
+invalid-type-guard-definition = "error"
+invalid-type-variable-constraints = "error"
+missing-argument = "error"
+missing-typed-dict-key = "error"
+no-matching-overload = "error"
+non-subscriptable = "error"
+not-iterable = "error"
+override-of-final-method = "error"
+parameter-already-assigned = "error"
+positional-only-parameter-as-kwarg = "error"
+raw-string-type-annotation = "error"
+static-assert-error = "error"
+subclass-of-final-class = "error"
+too-many-positional-arguments = "error"
+type-assertion-failure = "error"
+unavailable-implicit-super-arguments = "error"
+unknown-argument = "error"
+unresolved-attribute = "error"
+unresolved-import = "error"
+unresolved-reference = "error"
+unsupported-bool-conversion = "error"
+unsupported-operator = "error"
+zero-stepsize-in-slice = "error"
+ambiguous-protocol-member = "error"
+deprecated = "error"
+ignore-comment-unknown-rule = "error"
+invalid-ignore-comment = "error"
+possibly-missing-attribute = "error"
+possibly-missing-implicit-call = "error"
+possibly-missing-import = "error"
+redundant-cast = "error"
+undefined-reveal = "error"
+unresolved-global = "error"
+unsupported-base = "error"
+useless-overload-body = "error"
+division-by-zero = "error"
+possibly-unresolved-reference = "error"
+unused-ignore-comment = "error"
