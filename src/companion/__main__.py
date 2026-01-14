@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 
-import uvicorn
+from companion.logger import setup_logging
+from companion.server import SecureWebSocketServer
+
+
+async def async_main() -> None:
+    """Execute the main function."""
+    setup_logging()
+    server = SecureWebSocketServer()
+    await server.run()
 
 
 def main() -> None:
-    """Execute the main function."""
-    uvicorn.run(
-        "companion.service:app",
-        host="0.0.0.0",  # noqa: S104
-        port=8080,
-        reload=True,  # Dev mode auto-reload
-        log_level="info",
-    )
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":

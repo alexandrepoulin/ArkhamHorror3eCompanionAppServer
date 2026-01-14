@@ -13,8 +13,10 @@ version = "0.0.1"
 dependencies = [
   "pydantic~=2.0",
   "pydantic-settings",
-  "fastapi",
-  "uvicorn[standard]"
+  "websockets",
+  "structlog",
+  "python-json-logger",
+  "bidict"
 ]
 
 [project.optional-dependencies]
@@ -181,3 +183,6 @@ useless-overload-body = "error"
 division-by-zero = "error"
 possibly-unresolved-reference = "error"
 unused-ignore-comment = "error"
+
+[tool.uv_build]
+package-dir = "src"

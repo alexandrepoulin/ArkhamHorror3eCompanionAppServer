@@ -26,18 +26,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
     mv /root/.local/bin/uv /usr/local/bin/uv
 
+
 WORKDIR /app
 COPY --from=builder /build/dist/*.whl .
 COPY --from=builder /build/pyproject.toml ./
+COPY nogit/cert.pem .
+COPY nogit/key.pem .
 
 # Install runtime package + deps with uv (fast)
 RUN uv pip install --system --no-cache --only-binary=all *.whl
 
 # Non-root user
-RUN useradd --create-home --shell /bin/false appuser
+RUN useradd --create-home --shell /bin/false appuser && \
+    chown -R appuser:appuser /app
 USER appuser
-EXPOSE 8000
+EXPOSE 8081
 
 # Use your CLI entrypoint
 ENTRYPOINT ["companion"]
-CMD ["--host", "0.0.0.0", "--port", "8000"]
+CMD ["--host", "0.0.0.0", "--port", "8081"]

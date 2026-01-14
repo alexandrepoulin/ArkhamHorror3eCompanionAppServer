@@ -1,42 +1,21 @@
-"""Everything related to deck creation."""
+"""Definitions of how decks work."""
 
 from __future__ import annotations
 
-import re
 import secrets
 from collections import defaultdict
-from functools import cache
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self, SupportsIndex, cast, overload
+from typing import TYPE_CHECKING, Self, SupportsIndex, overload
 
-from companion.mappings import (
-    CODEX_ATTACHABLE,
-    CODEX_ENCOUNTERS,
-    CODEX_ITEMS,
-    CODEX_MONSTERS,
-    CODEX_NEIGHBOURHOODS,
-    REQUIRED_CODEX,
-    REQUIRED_NEIGHBOURHOODS,
-    SCENARIO_ANOMALY_MAP,
-    SCENARIO_TERROR_MAP,
-)
 from companion.util_classes import (
     Card,
     CodexCard,
     CodexNeighbourhoodCard,
-    Expansions,
-    HeadlineCard,
     Neighbourhood,
     NeighbourhoodCard,
 )
 
 if TYPE_CHECKING:
     from collections.abc import MutableSequence
-
-    from companion.base_models import GameSettings
-
-IMAGES = Path("resources/triaged_images")
-NEIGHBOURHOOD_RE = re.compile("(.*) Neighbou{0,1}rhood.*")
 
 
 def secure_shuffle[T: Card](deck: MutableSequence[T]) -> None:
@@ -131,7 +110,7 @@ class DeckBase[T: Card](list[T]):
 class Deck[T: Card](DeckBase[T]):
     """A deck with the same card back for every card."""
 
-    def __init__(self, deck: list[T], card_back: Card) -> None:
+    def __init__(self, deck: list[T], card_back: str) -> None:
         """Initialize class.
 
         Args:
@@ -146,7 +125,7 @@ class Deck[T: Card](DeckBase[T]):
 class NeighbourhoodDeck(Deck[NeighbourhoodCard]):
     """A deck for a neighbourhood."""
 
-    def __init__(self, deck: list[NeighbourhoodCard], card_back: Card) -> None:
+    def __init__(self, deck: list[NeighbourhoodCard], card_back: str) -> None:
         """Initialize class.
 
         Args:
@@ -155,10 +134,8 @@ class NeighbourhoodDeck(Deck[NeighbourhoodCard]):
 
         """
         super().__init__(deck=deck, card_back=card_back)
-        self.card_back = card_back
         self.attached_terror: DeckBase[Card] = DeckBase(deck=[])
-        self.attached_codex: CodexCard | None = None
-        self.clues = 0
+        self.attached_codex: CodexNeighbourhoodCard | None = None
 
     def add_terror(self, card: Card) -> None:
         """Attach a terror card to the deck.
@@ -169,7 +146,7 @@ class NeighbourhoodDeck(Deck[NeighbourhoodCard]):
         """
         self.attached_terror.top(card)
 
-    def attach_codex_card(self, card: CodexCard) -> None:
+    def attach_codex_card(self, card: CodexNeighbourhoodCard) -> None:
         """Attach a codex card to the deck.
 
         Args:
@@ -179,11 +156,11 @@ class NeighbourhoodDeck(Deck[NeighbourhoodCard]):
             ValueError: raised if there is already a codex card attached.
 
         """
-        if self.attach_codex_card is not None:
+        if self.attached_codex is not None:
             raise ValueError("Codex card already present.")
         self.attached_codex = card
 
-    def pop_codex_card(self) -> CodexCard:
+    def pop_codex_card(self) -> CodexNeighbourhoodCard:
         """Remove the codex card and return it.
 
         Raises:
@@ -206,13 +183,12 @@ class NeighbourhoodDeck(Deck[NeighbourhoodCard]):
 
         """
         self.shuffle_into_top_three(card)
-        self.clues += 1
 
 
 class ArchiveDeck(dict[int, CodexCard]):
     """The archive/codex deck."""
 
-    def __init__(self, archive: dict[int, CodexCard]) -> None:
+    def __init__(self, archive: dict[int, CodexCard], card_back: str) -> None:
         """Initialize class.
 
         Args:
@@ -220,6 +196,7 @@ class ArchiveDeck(dict[int, CodexCard]):
 
         """
         super().__init__(archive)
+        self.card_back = card_back
 
     def get_card(self, codex_number: int) -> CodexCard:
         """Get a codex card by number.
@@ -324,266 +301,3 @@ class EventDeck(DeckBase[NeighbourhoodCard]):
         """
         result = other.__add__(self)
         return type(self)(deck=result)
-
-
-# Anomalies decks
-def create_anomalies_deck(settings: GameSettings) -> Deck[Card] | None:
-    """Create the anomalies deck if applicable.
-
-    Args:
-        settings: The game settings.
-
-    Returns:
-        The deck for the anomalies or None if not applicable.
-
-    """
-    if (anomaly := SCENARIO_ANOMALY_MAP.get(settings.scenario)) is None:
-        return None
-
-    directory = IMAGES / "Anomalies" / f"{anomaly} Anomalies"
-    deck = Deck(
-        card_back=Card(face=next(directory.glob(f"{anomaly} Anomalies*back*"))),
-        deck=[Card(face=path) for path in directory.glob(f"{anomaly} Anomalies*face*")],
-    )
-    deck.shuffle()
-    return deck
-
-
-# Terror decks
-def create_terror_deck(settings: GameSettings) -> Deck[Card] | None:
-    """Create the terror deck if applicable.
-
-    Args:
-        settings: The game settings.
-
-    Returns:
-        The deck for the terror or None if not applicable.
-
-    """
-    if (terror := SCENARIO_TERROR_MAP.get(settings.scenario)) is None:
-        return None
-
-    directory = IMAGES / "Terror" / f"{terror} Terror"
-    deck = Deck(
-        card_back=Card(face=next(directory.glob(f"{terror} Terror*back*"))),
-        deck=[Card(face=path) for path in directory.glob(f"{terror} Terror*face*")],
-    )
-    deck.shuffle()
-    return deck
-
-
-# Headline decks
-def create_headline_deck(settings: GameSettings) -> Deck[HeadlineCard]:
-    """Create the headline deck.
-
-    Args:
-        settings: The game settings.
-
-    Returns:
-        The headline deck.
-
-    """
-    directory = IMAGES / "Headlines" / "Headlines"
-    card_back = Card(face=next(directory.glob("Headlines*back*")))
-    base_rumors = ("6", "7", "10", "11")
-    deck = [
-        HeadlineCard(face=path, is_rumor=any(num in path.stem for num in base_rumors))
-        for path in directory.glob("Headlines*face*")
-    ]
-
-    if settings.expansions & Expansions.DEAD_OF_NIGHT:
-        directory = IMAGES / "Headlines" / "Headlines (DoN)"
-        don_rumors = ("4", "6")
-        deck.extend(
-            [
-                HeadlineCard(face=path, is_rumor=any(num in path.stem for num in don_rumors))
-                for path in directory.glob("*")
-            ]
-        )
-    if settings.expansions & Expansions.UNDER_DARK_WAVES:
-        # No rumors in Under Dark Waves
-        directory = IMAGES / "Headlines" / "Headlines (UDW)"
-        deck.extend([HeadlineCard(face=path, is_rumor=False) for path in directory.glob("*")])
-    if settings.expansions & Expansions.SECRETS_OF_THE_ORDER:
-        directory = IMAGES / "Headlines" / "Headlines (SotO)"
-        # Only one rumor in Secrets of the Order
-        deck.extend([HeadlineCard(face=path, is_rumor="0" in path.stem) for path in directory.glob("*")])
-    all_cards = Deck(deck=deck, card_back=card_back)
-    all_cards.shuffle()
-    return all_cards[:13]
-
-
-def create_scenario_neighbourhoods_deck(
-    settings: GameSettings,
-) -> tuple[dict[Neighbourhood, Deck[NeighbourhoodCard]], dict[Neighbourhood, Deck[NeighbourhoodCard]]]:
-    """Create the required neighbourhood decks.
-
-    Args:
-        settings: The game settings.
-
-    Returns:
-        A mapping of neighbourhoods required right away, and one for decks that can be added later.
-
-    """
-    required = REQUIRED_NEIGHBOURHOODS[settings.scenario]
-    need_now = required["start"]
-    set_aside = required.get("later", [])
-
-    decks_at_start: dict[Neighbourhood, Deck[NeighbourhoodCard]] = {}
-    for neighbourhood in need_now:
-        decks_at_start[neighbourhood] = create_neighbourhoods_deck(settings, neighbourhood)
-
-    decks_set_aside: dict[Neighbourhood, Deck[NeighbourhoodCard]] = {}
-    for neighbourhood in set_aside:
-        decks_set_aside[neighbourhood] = create_neighbourhoods_deck(settings, neighbourhood)
-
-    return (decks_at_start, decks_set_aside)
-
-
-def create_neighbourhoods_deck(settings: GameSettings, neighbourhood: Neighbourhood) -> Deck[NeighbourhoodCard]:
-    """Create a specific neighbourhood deck.
-
-    Args:
-        settings: The game settings.
-        neighbourhood: The neighbourhood.
-
-    Returns:
-        The deck for the neighbourhood.
-
-    """
-    directory = IMAGES / "Neighborhoods" / f"{neighbourhood} Neighbourhood"
-    card_back_path = get_neighbourhood_back_path(neighbourhood)
-    card_back = Card(face=card_back_path)
-    deck = [
-        NeighbourhoodCard(neighbourhood=neighbourhood, face=path, back=card_back_path, is_event=False)
-        for path in directory.glob(f"{neighbourhood}*face*")
-    ]
-    if settings.expansions & Expansions.DEAD_OF_NIGHT:
-        directory = IMAGES / "Neighborhoods" / f"{neighbourhood} Neighbourhood (DoN)"
-        deck.extend(
-            [
-                NeighbourhoodCard(neighbourhood=neighbourhood, face=path, back=card_back_path, is_event=False)
-                for path in directory.glob(f"{neighbourhood}*face*")
-            ]
-        )
-    if settings.expansions & Expansions.UNDER_DARK_WAVES:
-        directory = IMAGES / "Neighborhoods" / f"{neighbourhood} Neighbourhood (UDW)"
-        deck.extend(
-            [
-                NeighbourhoodCard(neighbourhood=neighbourhood, face=path, back=card_back_path, is_event=False)
-                for path in directory.glob(f"{neighbourhood}*face*")
-            ]
-        )
-    if settings.expansions & Expansions.SECRETS_OF_THE_ORDER:
-        directory = IMAGES / "Neighborhoods" / f"{neighbourhood} Neighbourhood (SotO)"
-        deck.extend(
-            [
-                NeighbourhoodCard(neighbourhood=neighbourhood, face=path, back=card_back_path, is_event=False)
-                for path in directory.glob(f"{neighbourhood}*face*")
-            ]
-        )
-    deck = NeighbourhoodDeck(deck=deck, card_back=card_back)
-    deck.shuffle()
-    return deck
-
-
-@cache
-def get_neighbourhood_back_path(neighbourhood: Neighbourhood) -> Path:
-    """Get the card back path or a neighbourhood.
-
-    Args:
-        neighbourhood: The neighbourhood in question.
-
-    Returns:
-        The path to the card back image.
-
-    """
-    directory = IMAGES / "Neighborhoods" / f"{neighbourhood} Neighbourhood"
-    return next(directory.glob(f"{neighbourhood}*back*"))
-
-
-def create_event_deck(settings: GameSettings) -> EventDeck:
-    """Create the event deck.
-
-    Args:
-        settings: The game settings.
-
-    Returns:
-        The event deck.
-
-    """
-    directory = IMAGES / "Events" / f"{settings.scenario} Event Deck/"
-    deck: list[NeighbourhoodCard] = []
-    for path in directory.glob("*face*"):
-        neighbourhood = Neighbourhood(cast("re.Match[str]", NEIGHBOURHOOD_RE.match(path.stem)).group(1))
-        card_back_path = get_neighbourhood_back_path(neighbourhood)
-        deck.append(NeighbourhoodCard(neighbourhood=neighbourhood, face=Path(path), back=card_back_path, is_event=True))
-
-    deck = EventDeck(deck=deck)
-    deck.shuffle()
-    return deck
-
-
-def create_archive(settings: GameSettings) -> ArchiveDeck:
-    """Create the archive deck.
-
-    Args:
-        settings: The game settings.
-
-    Returns:
-        The archive deck.
-
-    """
-    required = REQUIRED_CODEX[settings.scenario]
-    directory = IMAGES / "Codex"
-    archive: dict[int, CodexCard] = {}
-    for number in required:
-        paths = list(directory.glob(f"*{number}*"))
-        face, back = paths if "face" in paths[0].stem else (paths[1], paths[0])
-        if number in CODEX_NEIGHBOURHOODS:
-            archive[number] = CodexNeighbourhoodCard(
-                face=Path(face),
-                back=Path(back),
-                number=number,
-                is_encounter=number in CODEX_ENCOUNTERS,
-                can_attach=number in CODEX_ATTACHABLE,
-                neighbourhood=CODEX_NEIGHBOURHOODS[number],
-            )
-        else:
-            archive[number] = CodexCard(
-                face=Path(face),
-                back=Path(back),
-                number=number,
-                is_item=number in CODEX_ITEMS,
-                is_flipped=False,
-                is_monster=number in CODEX_MONSTERS,
-                can_attach=False,
-                is_encounter=False,
-            )
-
-    return ArchiveDeck(archive=archive)
-
-
-def create_all_scenario_decks(settings: GameSettings) -> dict[str, Any]:
-    """Create all the required decks based on game settings.
-
-    Args:
-        settings: The Game settings.
-
-    Returns:
-        A dict mapping the kind of deck to the deck.
-
-    """
-    neighbourhood_needs, neighbourhood_later = create_scenario_neighbourhoods_deck(settings)
-    event_deck = create_event_deck(settings)
-    event_decks_later = event_deck.remove_neighbourhood(list(neighbourhood_later.keys()))
-
-    return {
-        "Neighbourhood_Decks": neighbourhood_needs,
-        "Event_deck": event_deck,
-        "Terror_deck": create_terror_deck(settings),
-        "Anomalies_deck": create_anomalies_deck(settings),
-        "Headline_deck": create_headline_deck(settings),
-        "Archive_deck": create_archive(settings),
-        "later": {"Event_Decks": event_decks_later, "Neighbourhoods": neighbourhood_later},
-    }

@@ -2,6 +2,8 @@ SHELL := /bin/bash
 
 
 PYTHON_SHORT_VERSION := $(shell echo $(PYTHON_VERSION) | grep -o '[0-9].[0-9]*')
+#REGISTRY:=pihole.local:5000
+REGISTRY:=192.168.0.100:5000
 
 ifeq ($(USE_SYSTEM_PYTHON), true)
 	PYTHON_PACKAGE_PATH:=$(shell python -c "import sys; print(sys.path[-1])")
@@ -89,7 +91,7 @@ test:
 
 
 #
-# Packaging
+# Getting it ready to go
 #
 
 .PHONY: docker-build
@@ -98,7 +100,19 @@ docker-build:
 
 .PHONY: docker-run
 docker-run:
-	docker run -
+	docker run -p 8081:8081 companion
+
+.PHONY: docker-push
+docker-push:
+	docker tag companion $(REGISTRY)/companion:latest && \
+	docker push $(REGISTRY)/companion:latest
+
+
+# docker buildx create --use --name multiarch-insecure2 --buildkitd-flags '--allow-insecure-entitlement security.insecure' --config /etc/buildkit/buildkitd.toml --use
+.PHONY: docker-pi
+docker-pi:
+	docker buildx use multiarch-insecure2  && \
+	docker buildx build --platform linux/arm64 --tag 192.168.0.100:5000/companion:latest --push -t $(REGISTRY)/companion:latest . 
 
 #
 # Common commands
@@ -108,3 +122,7 @@ docker-run:
 rmzone:
 	rm -rf resources/triaged_images/*/*Zone.Identifier*;
 	rm -rf resources/triaged_images/*/*/*Zone.Identifier*;
+
+.PHONY: send-pi
+send-pi:
+	scp /mnt/c/Users/Alexandre/AndroidStudioProjects/ArkhamHorror3eCompanion/app/release/app-release.apk alex@pi.local:/home/alex/projects/simple_server/files/AH3E-companion.apk

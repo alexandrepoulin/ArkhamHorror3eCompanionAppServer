@@ -1,6 +1,6 @@
 """Mappings describing what needs what."""
 
-from companion.util_classes import Anomalies, Expansions, Neighbourhood, Scenarios, Terror
+from companion.util_classes import Expansions, Neighbourhood, Scenarios, Terror
 
 SCENARIO_BY_EXPANSION = {
     Scenarios.SHOTS_IN_THE_DARK: Expansions.DEAD_OF_NIGHT,  # Dead of Night
@@ -12,6 +12,13 @@ SCENARIO_BY_EXPANSION = {
     Scenarios.THE_DEAD_CRY_OUT: Expansions.SECRETS_OF_THE_ORDER,  # Secrets of the Order
     Scenarios.THE_KEY_AND_THE_GATE: Expansions.SECRETS_OF_THE_ORDER,
     Scenarios.BOUND_TO_SERVE: Expansions.SECRETS_OF_THE_ORDER,
+}
+
+HEADLINE_RUMORS: dict[Expansions, list[int]] = {
+    Expansions.BASE: [29, 30, 31, 32],
+    Expansions.DEAD_OF_NIGHT: [38, 39],
+    Expansions.UNDER_DARK_WAVES: [43],
+    Expansions.SECRETS_OF_THE_ORDER: [],
 }
 
 REQUIRED_CODEX = {
@@ -66,16 +73,6 @@ CODEX_NEIGHBOURHOODS = {
     168: Neighbourhood.UPTOWN,
 }
 
-SCENARIO_ANOMALY_MAP = {
-    Scenarios.APPROACH_OF_AZATHOTH: Anomalies.TEMPORAL_FISSURE,
-    Scenarios.VEIL_OF_TWILIGHT: Anomalies.FRACTURED_REALITY,
-    Scenarios.ECHOES_OF_THE_DEEP: Anomalies.NIGHTMARE_BREACH,
-    Scenarios.SILENCE_OF_TSATHOGGUA: Anomalies.YUGGOTH_EMERGENT,
-    Scenarios.THE_PALE_LANTERN: Anomalies.VISIONS_OF_THE_MOON,
-    Scenarios.BOUND_TO_SERVE: Anomalies.LOST_SOULS,
-    Scenarios.THE_KEY_AND_THE_GATE: Anomalies.FRACTURED_REALITY,
-}
-
 
 REQUIRED_NEIGHBOURHOODS = {
     Scenarios.APPROACH_OF_AZATHOTH: {
@@ -86,6 +83,7 @@ REQUIRED_NEIGHBOURHOODS = {
             Neighbourhood.MERCHANT_DISTRICT,
             Neighbourhood.RIVERTOWN,
             Neighbourhood.THE_STREETS,
+            Neighbourhood.TEMPORAL_FISSURE,
         ],
     },
     Scenarios.FEAST_FOR_UMORDHOTH: {
@@ -106,6 +104,7 @@ REQUIRED_NEIGHBOURHOODS = {
             Neighbourhood.MISKATONIC_UNIVERSITY,
             Neighbourhood.UPTOWN,
             Neighbourhood.THE_STREETS,
+            Neighbourhood.FRACTURED_REALITY,
         ],
     },
     Scenarios.ECHOES_OF_THE_DEEP: {
@@ -116,6 +115,7 @@ REQUIRED_NEIGHBOURHOODS = {
             Neighbourhood.RIVERTOWN,
             Neighbourhood.DOWNTOWN,
             Neighbourhood.THE_STREETS,
+            Neighbourhood.NIGHTMARE_BREACH,
         ],
     },
     Scenarios.SHOTS_IN_THE_DARK: {
@@ -136,6 +136,7 @@ REQUIRED_NEIGHBOURHOODS = {
             Neighbourhood.MISKATONIC_UNIVERSITY,
             Neighbourhood.UPTOWN,
             Neighbourhood.THE_STREETS,
+            Neighbourhood.YUGGOTH_EMERGENT,
         ],
     },
     Scenarios.DREAMS_OF_RLYEH: {
@@ -164,6 +165,7 @@ REQUIRED_NEIGHBOURHOODS = {
             Neighbourhood.THE_STREETS,
             Neighbourhood.TRAVEL_ROUTES,
             Neighbourhood.STRANGE_HIGH_HOUSE,
+            Neighbourhood.VISIONS_OF_THE_MOON,
         ],
     },
     Scenarios.TYRANTS_OF_RUIN: {
@@ -214,6 +216,7 @@ REQUIRED_NEIGHBOURHOODS = {
             Neighbourhood.MERCHANT_DISTRICT,
             Neighbourhood.THE_STREETS,
             Neighbourhood.THE_UNNAMABLE,
+            Neighbourhood.FRACTURED_REALITY,
         ],
         "later": [
             Neighbourhood.THRESHOLDS,
@@ -230,6 +233,7 @@ REQUIRED_NEIGHBOURHOODS = {
             Neighbourhood.SOUTHSIDE,
             Neighbourhood.THE_STREETS,
             Neighbourhood.WITCH_HOUSE,
+            Neighbourhood.LOST_SOULS,
         ],
     },
 }

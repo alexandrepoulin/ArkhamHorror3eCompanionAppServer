@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from typing import Any
 
 
 class Scenarios(str, Enum):
@@ -38,20 +35,10 @@ class Scenarios(str, Enum):
 class Expansions(int, Enum):
     """The games expansions."""
 
+    BASE = 0
     DEAD_OF_NIGHT = 1
     UNDER_DARK_WAVES = 2
     SECRETS_OF_THE_ORDER = 4
-
-
-class Anomalies(str, Enum):
-    """The games anomalies."""
-
-    FRACTURED_REALITY = "Fractured Reality"
-    LOST_SOULS = "Lost Souls"
-    NIGHTMARE_BREACH = "Nightmare Breach"
-    TEMPORAL_FISSURE = "Temporal Fissure"
-    VISIONS_OF_THE_MOON = "Visions of the Moon"
-    YUGGOTH_EMERGENT = "Yuggoth Emergent"
 
 
 class Terror(str, Enum):
@@ -80,10 +67,7 @@ class Neighbourhood(str, Enum):
     THE_STREETS = "The Streets"
 
     ##### Dead of Night Expansion #####
-
-    # Neighbourhood
-    SHOTS_IN_THE_DARK = "SHOTS_IN_THE_DARK"
-    SILENCE_OF_TSATHOGGUA = "SILENCE_OF_TSATHOGGUA"
+    # None
 
     ##### Under Dark Waves Expansion #####
 
@@ -113,12 +97,46 @@ class Neighbourhood(str, Enum):
     THE_UNNAMABLE = "The Unnamable"
     WITCH_HOUSE = "Witch House"
 
+    ##### Anomalies are essentially neighbourhoods #####
+
+    FRACTURED_REALITY = "Fractured Reality"
+    LOST_SOULS = "Lost Souls"
+    NIGHTMARE_BREACH = "Nightmare Breach"
+    TEMPORAL_FISSURE = "Temporal Fissure"
+    VISIONS_OF_THE_MOON = "Visions of the Moon"
+    YUGGOTH_EMERGENT = "Yuggoth Emergent"
+
 
 @dataclass
 class Card:
     """A basic card."""
 
-    face: Path
+    face: str
+    back: str
+
+    def to_dict(
+        self, needs_resolving: bool = False, identifier: str = "", in_codex: bool = False, from_deck: bool = False
+    ) -> dict[str, Any]:
+        """Convert an instance of a Card or a subclass into something that can be sent as a message.
+
+        Args:
+            needs_resolving: True if this is an event card drawn from a neighbourhood deck, False otherwise.
+
+        Returns:
+            A dict of info needed for viewing.
+
+        """
+        return {
+            "face": self.face.lower(),
+            "back": self.back.lower(),
+            "needs_resolving": needs_resolving,  # whether to enable the x, pass and fail buttons
+            "identifier": identifier,  # for the response when resolving
+            "number": getattr(self, "number", 0),
+            "is_codex": isinstance(self, CodexCard),  # whether to allow to swap between front and back
+            "is_flipped": getattr(self, "is_flipped", False),  # which side of the codex card to show
+            "in_codex": in_codex,
+            "from_deck": from_deck,
+        }
 
 
 @dataclass
@@ -132,7 +150,6 @@ class HeadlineCard(Card):
 class NeighbourhoodCard(Card):
     """A neighbourhood card."""
 
-    back: Path
     neighbourhood: Neighbourhood
     is_event: bool
 
@@ -141,21 +158,38 @@ class NeighbourhoodCard(Card):
 class CodexCard(Card):
     """A codex card."""
 
-    back: Path
-    number: int = -1
-    is_item: bool = False
-    is_flipped: bool = False
-    is_monster: bool = False
-    can_attach: bool = False
-    is_encounter: bool = False
+    number: int
+    is_item: bool
+    is_flipped: bool
+    is_monster: bool
+    can_attach: bool
+    is_encounter: bool
 
 
 @dataclass
 class CodexNeighbourhoodCard(CodexCard, NeighbourhoodCard):
     """A codex card associated with a neighbourhood."""
 
-    is_item: bool = False
-    is_flipped: bool = False
-    is_monster: bool = False
-    is_codex: bool = True
-    is_event: bool = False
+    def __init__(
+        self, /, face: str, back: str, number: int, can_attach: bool, is_encounter: bool, neighbourhood: Neighbourhood
+    ):
+        super().__init__(
+            face=face,
+            back=back,
+            number=number,
+            is_item=False,
+            is_flipped=False,
+            is_monster=False,
+            can_attach=can_attach,
+            is_encounter=is_encounter,
+        )
+        self.neighbourhood = neighbourhood
+        self.is_event = False
+
+
+@dataclass
+class GameSettings:
+    """The game settings."""
+
+    scenario: Scenarios
+    expansions: int
