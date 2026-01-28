@@ -7,6 +7,28 @@ from enum import Enum
 from typing import Any
 
 
+def getExpansionText(expansions: int) -> str:
+    """Create the string of the expansions based on the bit mask.
+
+    Args:
+        expansions: the expansion bit mask.
+
+    Returns:
+        A string with the expansions being used.
+
+    """
+    if expansions == 0:
+        return "None"
+    used: list[str] = []
+    if 1 & expansions:
+        used.append("Dead of Night")
+    if 2 & expansions:
+        used.append("Under Dark Waves")
+    if 4 & expansions:
+        used.append("Secrets of the Order")
+    return ", ".join(used)
+
+
 class Scenarios(str, Enum):
     """The games scenarios."""
 
@@ -107,6 +129,18 @@ class Neighbourhood(str, Enum):
     YUGGOTH_EMERGENT = "Yuggoth Emergent"
 
 
+class CardViewState(str, Enum):
+    """The various states a card could be in when viewing"""
+
+    FACE_BACK = "face_back"  # buttons: front and back, starting on the front side
+    BACK_FACE = "back_face"  # buttons: front and back, starting on the back side
+    EVENT = "event"  # buttons: pass and fail, show front
+    ARCHIVE = "archive"  # buttons: add, show front
+    UN_FLIPPED_CODEX = "un_flipped_codex"  # buttons: flip, remove, add/remove counters; only show face
+    FLIPPED_CODEX = "flipped_codex"  # buttons: front, back, remove, add/remove counters; show back
+    RUMOR = "rumor"  # buttons: add/remove counters, dismiss; only show front.
+
+
 @dataclass
 class Card:
     """A basic card."""
@@ -114,9 +148,7 @@ class Card:
     face: str
     back: str
 
-    def to_dict(
-        self, needs_resolving: bool = False, identifier: str = "", in_codex: bool = False, from_deck: bool = False
-    ) -> dict[str, Any]:
+    def to_dict(self, state: CardViewState = CardViewState.FACE_BACK, identifier: str = "") -> dict[str, Any]:
         """Convert an instance of a Card or a subclass into something that can be sent as a message.
 
         Args:
@@ -129,13 +161,10 @@ class Card:
         return {
             "face": self.face.lower(),
             "back": self.back.lower(),
-            "needs_resolving": needs_resolving,  # whether to enable the x, pass and fail buttons
+            "state": state.value,
             "identifier": identifier,  # for the response when resolving
             "number": getattr(self, "number", 0),
-            "is_codex": isinstance(self, CodexCard),  # whether to allow to swap between front and back
-            "is_flipped": getattr(self, "is_flipped", False),  # which side of the codex card to show
-            "in_codex": in_codex,
-            "from_deck": from_deck,
+            "counters": getattr(self, "counters", -1),
         }
 
 
@@ -144,6 +173,7 @@ class HeadlineCard(Card):
     """A headline card."""
 
     is_rumor: bool
+    counters: int
 
 
 @dataclass
@@ -164,6 +194,7 @@ class CodexCard(Card):
     is_monster: bool
     can_attach: bool
     is_encounter: bool
+    counters: int
 
 
 @dataclass
@@ -182,6 +213,7 @@ class CodexNeighbourhoodCard(CodexCard, NeighbourhoodCard):
             is_monster=False,
             can_attach=can_attach,
             is_encounter=is_encounter,
+            counters=-1,
         )
         self.neighbourhood = neighbourhood
         self.is_event = False

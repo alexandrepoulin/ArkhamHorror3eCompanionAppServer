@@ -12,6 +12,7 @@ from companion.decks import ArchiveDeck, Deck, EmptyDeckError, EventDeck, Neighb
 from companion.mappings import DEFAULT_TERROR_NEIGHBOURHOOD
 from companion.util_classes import (
     Card,
+    CardViewState,
     CodexNeighbourhoodCard,
     HeadlineCard,
     Neighbourhood,
@@ -181,7 +182,7 @@ class GameState:
         self.terror_deck.bottom(card)
         return card
 
-    def detach_codex_card(self, neighbourhood: Neighbourhood) -> CodexNeighbourhoodCard | None:
+    def detach_codex_card(self, neighbourhood: Neighbourhood) -> None:
         """Attach a codex card from the codex to a neighbourhood.
 
         Args:
@@ -192,10 +193,11 @@ class GameState:
 
         """
         if self.neighbourhood_decks[neighbourhood].attached_codex is None:
-            return None
+            return
         card = self.neighbourhood_decks[neighbourhood].pop_codex_card()
+        card.is_flipped = False
+        card.counters = 0
         self.archive_deck.add_card(card)
-        return card
 
     def view_codex_card(self, neighbourhood: Neighbourhood) -> CodexNeighbourhoodCard | None:
         """View a codex card from the codex to a neighbourhood.
@@ -319,8 +321,10 @@ class GameState:
             The archive.
 
         """
-        
-        return sorted([card.to_dict() for card in self.archive_deck.values()], key=lambda x: x["number"])
+        return sorted(
+            [card.to_dict(state=CardViewState.ARCHIVE) for card in self.archive_deck.values()],
+            key=lambda x: x["number"],
+        )
 
     def get_codex(self) -> list[dict[str, Any]]:
         """Return the whole codex.
@@ -329,7 +333,12 @@ class GameState:
             The codex.
 
         """
-        return sorted([card.to_dict(in_codex=True) for card in self.codex.values()], key=lambda x: x["number"])
+        result: list[dict[str, Any]] = []
+        for card in self.codex.values():
+            state = CardViewState.UN_FLIPPED_CODEX if not card.is_flipped else CardViewState.FLIPPED_CODEX
+            result.append(card.to_dict(state=state))
+
+        return sorted(result, key=lambda x: x["number"])
 
     def add_from_archive(self, number: int) -> None:
         """Move a card from the archive to the codex.
@@ -365,11 +374,38 @@ class GameState:
             ValueError: Raised if that number isn't available to be moved.
 
         """
-        if number not in self.codex:
-            raise ValueError("Invalid codex card number to return to archive.")
-        card = self.codex.get_card(number)
-        card.is_flipped = False
-        self.archive_deck.add_card(card)
+        if number in self.codex:
+            card = self.codex.get_card(number)
+            card.counters = 0
+            card.is_flipped = False
+            self.archive_deck.add_card(card)
+            return
+        for neighbourhood, deck in self.neighbourhood_decks.items():
+            if deck.has_codex(number):
+                self.detach_codex_card(neighbourhood)
+                return
+        raise ValueError("Invalid codex card number to return to archive.")
+
+    def flip_codex(self, number: int) -> Card:
+        """Move a card from the codex to the archive.
+
+        Args:
+            number: The codex card number.
+
+        Raises:
+            ValueError: Raised if that number isn't available to be moved.
+
+        """
+        if number in self.codex:
+            self.codex[number].is_flipped = True
+            return self.codex[number]
+        for deck in self.neighbourhood_decks.values():
+            if deck.has_codex(number):
+                if TYPE_CHECKING:
+                    assert deck.attached_codex is not None
+                deck.attached_codex.is_flipped = True
+                return deck.attached_codex
+        raise ValueError("Invalid codex card number to return to archive.")
 
     def add_neighbourhood(self, neighbourhood: Neighbourhood) -> None:
         """Add a list of neighbourhoods to the game.
@@ -447,7 +483,7 @@ class GameState:
                 },
             ]
         )
-        
+
         if self.has_terror:
             decks.append(
                 {
@@ -458,7 +494,7 @@ class GameState:
                     "num_attached_terror": 0,
                 }
             )
-        
+
         if self.active_rumor is not None:
             decks.append(
                 {

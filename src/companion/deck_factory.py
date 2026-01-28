@@ -77,7 +77,10 @@ def create_headline_deck(settings: GameSettings) -> Deck[HeadlineCard]:
             continue
         for card in HEADLINE_CARDS[expansion]:
             number = int(_number_re.findall(card)[0])
-            deck.append(HeadlineCard(face=card.lower(), back=card_back, is_rumor=number in HEADLINE_RUMORS[expansion]))
+            is_rumor = number in HEADLINE_RUMORS[expansion]
+            deck.append(
+                HeadlineCard(face=card.lower(), back=card_back, is_rumor=is_rumor, counters=0 if is_rumor else -1)
+            )
 
     all_cards = Deck(deck=deck, card_back=card_back)
     all_cards.shuffle()
@@ -231,6 +234,7 @@ def create_archive(settings: GameSettings) -> ArchiveDeck:
             is_monster=number in CODEX_MONSTERS,
             can_attach=False,
             is_encounter=False,
+            counters=0,
         )
 
     return ArchiveDeck(archive=archive, card_back="codex_61_back")
@@ -250,7 +254,7 @@ def create_all_scenario_decks(settings: GameSettings) -> dict[str, Any]:
     event_deck = create_event_deck(settings)
     event_decks_later = event_deck.remove_neighbourhood(list(neighbourhood_later.keys()))
     terror_deck, terror_deck_name = create_terror_deck(settings)
-        
+
     return {
         "Neighbourhood_Decks": neighbourhood_needs,
         "Event_deck": event_deck,

@@ -21,6 +21,8 @@ from companion.decks import EmptyDeckError
 from companion.game_state import GameState
 from companion.message_models import (
     Ack,
+    AllLogMessage,
+    Boot,
     ErrorReply,
     HelloMessage,
     LogMessage,
@@ -28,7 +30,15 @@ from companion.message_models import (
     UpdateMessage,
     ViewerReply,
 )
-from companion.util_classes import Card, CodexNeighbourhoodCard, GameSettings, Neighbourhood, Scenarios
+from companion.util_classes import (
+    Card,
+    CardViewState,
+    CodexNeighbourhoodCard,
+    GameSettings,
+    Neighbourhood,
+    Scenarios,
+    getExpansionText,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -56,6 +66,7 @@ class SecureWebSocketServer:
         self.player_colours: dict[ServerConnection, str] = {}
         self.game_states: deque[GameState] = deque(maxlen=20)
         self.future_states: list[GameState] = []
+        self.game_logs: list[LogMessage] = []
 
     @property
     def game(self) -> GameState:
@@ -173,7 +184,8 @@ class SecureWebSocketServer:
             _logger.info("No players left in game, deleted it.")
             self.game_states.clear()
             self.future_states = []
-            
+            self.game_logs = []
+
         await self.send_hellos()
 
     async def handle_message(self, message: str, sender: ServerConnection) -> str | None:
@@ -223,15 +235,20 @@ class SecureWebSocketServer:
             case "flip_codex":
                 self.backup_game()
                 await self.flip_codex(json_message, sender)
+                await self.update()
             case "remove_codex":
                 self.backup_game()
                 await self.remove_codex(json_message, sender)
                 await self.update()
             case "view_attached_codex":
                 await self.view_attached_codex(json_message, sender)
-            case "detach_codex":
+            case "add_counter_codex":
                 self.backup_game()
-                await self.detach_codex(json_message, sender)
+                await self.add_counter_codex(json_message, sender)
+                await self.update()
+            case "remove_counter_codex":
+                self.backup_game()
+                await self.remove_counter_codex(json_message, sender)
                 await self.update()
             case "draw_terror":
                 self.backup_game()
@@ -266,6 +283,14 @@ class SecureWebSocketServer:
             case "remove_rumor":
                 self.backup_game()
                 await self.remove_rumor(sender)
+                await self.update()
+            case "add_counter_rumor":
+                self.backup_game()
+                await self.add_counter_rumor(sender)
+                await self.update()
+            case "remove_counter_rumor":
+                self.backup_game()
+                await self.remove_counter_rumor(sender)
                 await self.update()
             case "undo":
                 await self.undo(sender)
@@ -360,12 +385,12 @@ class SecureWebSocketServer:
             card: The relevant card if there is one.
 
         """
-        card_details = None if card is None else card.to_dict(identifier="logging")
+        card_details = None if card is None else card.to_dict()
         colour = self.player_colours[originator]
         player_name = self.players[originator]
-
-        message = LogMessage(message=log_message % player_name, card=card_details, colour=colour).as_message()
-
+        log_message_instance = LogMessage(message=log_message % player_name, card=card_details, colour=colour)
+        message = log_message_instance.as_message()
+        self.game_logs.insert(0, log_message_instance)
         await self.broadcast_players(message)
         _logger.info("Sent Log message.", extra={"message": message})
 
@@ -408,13 +433,24 @@ class SecureWebSocketServer:
             settings = GameSettings(
                 scenario=Scenarios(json_message["scenario"]), expansions=int(json_message["expansions"])
             )
+            self.game_states.clear()
+            self.future_states.clear()
             self.game_states.append(GameState(settings))
+            await self.broadcast_players(Boot().as_message())
+            self.players.clear()
+            self.player_colours.clear()
+            self.game_logs.clear()
             message = UpdateMessage(self.game.update_info(), can_redo=False, can_undo=False).as_message()
+
             await sender.send(message)
             self.players[sender] = json_message["player_name"]
             self.player_colours[sender] = json_message["player_colour"]
             _logger.info("Sent start game reply.", extra={"message": message})
             await self.send_hellos()
+            await self.send_log(
+                f"%s Started the Game! Scenario: {json_message['scenario']}; Expansion(s): {getExpansionText(int(json_message['expansions']))}",
+                sender,
+            )
         except ValueError:
             error_message = ErrorReply("Bad scenario or expansion values.").as_message()
             await sender.send(error_message)
@@ -459,6 +495,7 @@ class SecureWebSocketServer:
             self.players[sender] = json_message["player_name"]
             self.player_colours[sender] = json_message["player_colour"]
             _logger.info("Sent connect reply.", extra={"message": message})
+            await sender.send(AllLogMessage(self.game_logs).as_message())
 
             await self.send_hellos()
             await self.send_log("%s has joined!", sender)
@@ -502,12 +539,11 @@ class SecureWebSocketServer:
         try:
             neighbourhood = json_message["deck"]
             card, identifier = self.game.draw_from_neighbourhood(Neighbourhood(neighbourhood))
-            message = ViewerReply(
-                cards=[card.to_dict(needs_resolving=card.is_event, identifier=identifier, from_deck=True)]
-            ).as_message()
+            state = CardViewState.EVENT if card.is_event else CardViewState.FACE_BACK
+            message = ViewerReply(cards=[card.to_dict(state=state, identifier=identifier)]).as_message()
             await sender.send(message)
             _logger.info("Sent draw reply.", extra={"message": message})
-            await self.send_log(f"%s has drawn from the {neighbourhood} deck: [[Card]]", sender, card)
+            await self.send_log(f"%s has drawn from the {neighbourhood} deck: View Card", sender, card)
         except ValueError:
             error_message = ErrorReply("Bad draw message.").as_message()
             await sender.send(error_message)
@@ -543,7 +579,9 @@ class SecureWebSocketServer:
             sender: The client that sent the request.
 
         """
-        message = ViewerReply(cards=[card.to_dict() for card in self.game.event_deck_discard]).as_message()
+        message = ViewerReply(
+            trigger="view_discard", cards=[card.to_dict() for card in self.game.event_deck_discard]
+        ).as_message()
         await sender.send(message)
         _logger.info("Sent view_discard reply.", extra={"message": message})
 
@@ -555,7 +593,7 @@ class SecureWebSocketServer:
 
         """
         cards = self.game.get_codex()
-        message = ViewerReply(cards=cards).as_message()
+        message = ViewerReply(trigger="view_codex", cards=cards).as_message()
         await sender.send(message)
         _logger.info("Sent view_codex reply.", extra={"message": message})
 
@@ -567,7 +605,7 @@ class SecureWebSocketServer:
 
         """
         cards = self.game.get_archive()
-        message = ViewerReply(cards=cards).as_message()
+        message = ViewerReply(trigger="view_archive", cards=cards).as_message()
         await sender.send(message)
         _logger.info("Sent view_archive reply.", extra={"message": message})
 
@@ -584,9 +622,15 @@ class SecureWebSocketServer:
             sender: The client that sent the request.
 
         """
-        index = json_message["codex"]
-        card = self.game.archive_deck[index]
-        self.game.add_from_archive(index)
+        try:
+            index = json_message["codex"]
+            card = self.game.archive_deck[index]
+            self.game.add_from_archive(index)
+        except KeyError:
+            error_message = ErrorReply("Card already in Codex").as_message()
+            await sender.send(error_message)
+            _logger.info("Sent error reply.", extra={"message": error_message})
+            return
 
         _logger.info("Added codex card.", extra={"index": index})
         await self.ack("Codex card added!", sender)
@@ -616,10 +660,16 @@ class SecureWebSocketServer:
 
         """
         index = json_message["codex"]
-        self.game.codex[index].is_flipped = not self.game.codex[index].is_flipped
-        await self.ack("Codex card flipped!", sender)
-        await self.send_log(f"%s has flipped Codex card {index}.", sender)
-        _logger.info("Sent flip_codex reply.")
+        try:
+            card = self.game.flip_codex(index)
+            await self.ack("Codex card flipped!", sender)
+            await self.send_log(f"%s has flipped Codex card {index}. View Card", sender, card)
+            _logger.info("Sent flip_codex reply.")
+        except ValueError:
+            error_message = ErrorReply("Can't find card to flip!").as_message()
+            await sender.send(error_message)
+            _logger.info("Sent error reply.", extra={"message": error_message})
+            return
 
     async def remove_codex(self, json_message: Mapping[str, int], sender: ServerConnection) -> None:
         """Remove a card in the codex.
@@ -645,34 +695,7 @@ class SecureWebSocketServer:
             await sender.send(error_message)
             _logger.info("Sent error reply.", extra={"message": error_message})
 
-    async def detach_codex(self, json_message: Mapping[str, int], sender: ServerConnection) -> None:
-        """Detach a codex card from a neighbourhood.
-
-        Expected input:
-        {
-            "deck": <str>
-        }
-
-        Args:
-            json_message: The message from the socket
-            sender: The client that sent the request.
-
-        """
-        neighbourhood = Neighbourhood(json_message["deck"])
-        card = self.game.detach_codex_card(neighbourhood)
-        if card is None:
-            error_message = ErrorReply("No codex card was attached.").as_message()
-            await sender.send(error_message)
-            _logger.info("Sent error reply.", extra={"message": error_message})
-            return
-        message = ViewerReply(cards=[card.to_dict(identifier="flippable", from_deck=True)]).as_message()
-        await sender.send(message)
-        await self.send_log(
-            f"%s has detached a Codex card from the {card.neighbourhood.value} deck: [[Card]]", sender, card
-        )
-        _logger.info("Sent detach_codex reply.")
-
-    async def view_attached_codex(self, json_message: Mapping[str, int], sender: ServerConnection) -> None:
+    async def view_attached_codex(self, json_message: Mapping[str, str], sender: ServerConnection) -> None:
         """View attached codex card from a neighbourhood.
 
         Expected input:
@@ -688,15 +711,61 @@ class SecureWebSocketServer:
         neighbourhood = Neighbourhood(json_message["deck"])
         card = self.game.view_codex_card(neighbourhood)
         if card is None:
-            error_message = ErrorReply("No codex card was attached.").as_message()
-            await sender.send(error_message)
-            _logger.info("Sent error reply.", extra={"message": error_message})
-            return
-        message = ViewerReply(cards=[card.to_dict(from_deck=True)]).as_message()
+            message = ViewerReply(trigger="view_attached_codex", deck=json_message["deck"], cards=[]).as_message()
+        else:
+            state = CardViewState.UN_FLIPPED_CODEX if not card.is_flipped else CardViewState.FLIPPED_CODEX
+            message = ViewerReply(
+                trigger="view_attached_codex", deck=json_message["deck"], cards=[card.to_dict(state=state)]
+            ).as_message()
         await sender.send(message)
         _logger.info("Sent view_codex reply.")
 
-    async def draw_terror(self, json_message: Mapping[str, int], sender: ServerConnection) -> None:
+    async def add_counter_codex(self, json_message: Mapping[str, int], sender: ServerConnection) -> None:
+        """Add a counter to a codex card.
+
+        {
+            "codex": <int>
+        }
+
+        Args:
+            json_message: The message from the socket
+            sender: The client that sent the request.
+
+        """
+        number = json_message["codex"]
+        if number not in self.game.codex:
+            error_message = ErrorReply("Can't find codex card.").as_message()
+            await sender.send(error_message)
+            _logger.info("Sent error reply.", extra={"message": error_message})
+            return
+        self.game.codex[number].counters += 1
+
+    async def remove_counter_codex(self, json_message: Mapping[str, int], sender: ServerConnection) -> None:
+        """Remove a counter to a codex card.
+
+        {
+            "codex": <int>
+        }
+
+        Args:
+            json_message: The message from the socket
+            sender: The client that sent the request.
+
+        """
+        number = json_message["codex"]
+        if number not in self.game.codex:
+            error_message = ErrorReply("Can't find codex card.").as_message()
+            await sender.send(error_message)
+            _logger.info("Sent error reply.", extra={"message": error_message})
+            return
+        if self.game.codex[number].counters <= 0:
+            error_message = ErrorReply("No counters to remove!").as_message()
+            await sender.send(error_message)
+            _logger.info("Sent error reply.", extra={"message": error_message})
+            return
+        self.game.codex[number].counters -= 1
+
+    async def draw_terror(self, json_message: Mapping[str, str], sender: ServerConnection) -> None:
         """Draw a terror card attached to a neighbourhood deck.
 
         Expected input:
@@ -714,7 +783,7 @@ class SecureWebSocketServer:
             card = self.game.draw_terror_from_neighbourhood(Neighbourhood(neighbourhood))
             message = ViewerReply(cards=[card.to_dict()]).as_message()
             await sender.send(message)
-            await self.send_log(f"%s has drawn a terror card the {neighbourhood.value} deck: [[Card]]", sender, card)
+            await self.send_log(f"%s has drawn a terror card the {neighbourhood.value} deck: View Card", sender, card)
             _logger.info("Sent draw_terror reply.")
         except EmptyDeckError:
             error_message = ErrorReply("No Terror cards were attached.").as_message()
@@ -750,10 +819,10 @@ class SecureWebSocketServer:
         """
         try:
             card = self.game.spread_clue()
-            message = ViewerReply(cards=[card.to_dict()]).as_message()
+            message = ViewerReply(cards=[card.to_dict(state=CardViewState.BACK_FACE)]).as_message()
             await sender.send(message)
             _logger.info("Sent spread clue reply.", extra={"message": message})
-            await self.send_log(f"%s has spread a clue to the {card.neighbourhood.value} deck: [[Card]]", sender, card)
+            await self.send_log(f"%s has spread a clue to the {card.neighbourhood.value} deck: View Card", sender, card)
         except EmptyDeckError:
             message = ViewerReply(cards=[]).as_message()
             await sender.send(message)
@@ -774,7 +843,7 @@ class SecureWebSocketServer:
             message = ViewerReply(cards=[card.to_dict()]).as_message()
             await sender.send(message)
             _logger.info("Sent spread doom reply.", extra={"message": message})
-            await self.send_log(f"%s has spread doom to the {card.neighbourhood.value} deck: [[Card]]", sender, card)
+            await self.send_log(f"%s has spread doom to the {card.neighbourhood.value} deck: View Card", sender, card)
         except EmptyDeckError:
             message = ViewerReply(cards=[]).as_message()
             await sender.send(message)
@@ -794,9 +863,13 @@ class SecureWebSocketServer:
             result = self.game.spread_terror()
             await self.ack("Terror Spread!", sender)
             if isinstance(result, Neighbourhood):
-                await self.send_log(f"%s has spread terror to the {result.value} deck using the default location.", sender)
+                await self.send_log(
+                    f"%s has spread terror to the {result.value} deck using the default location.", sender
+                )
             else:
-                await self.send_log(f"%s has spread terror to the {result.neighbourhood.value}: [[Card]]", sender, result)
+                await self.send_log(
+                    f"%s has spread terror to the {result.neighbourhood.value}: View Card", sender, result
+                )
             _logger.info("Successfully spread terror.", extra={"result": result})
         except EmptyDeckError:
             await self.ack("No Terror Cards Remaining!", sender)
@@ -819,9 +892,9 @@ class SecureWebSocketServer:
                 "%s tried to gate burst, but the Event deck was empty. Add a doom to the sheet instead.", sender
             )
         else:
-            message = ViewerReply(cards=[card.to_dict()]).as_message()
+            message = ViewerReply(cards=[card.to_dict(state=CardViewState.BACK_FACE)]).as_message()
             await sender.send(message)
-            await self.send_log(f"%s caused a gate burst in {card.neighbourhood.value}: [[Card]]", sender, card)
+            await self.send_log(f"%s caused a gate burst in {card.neighbourhood.value}: View Card", sender, card)
         _logger.info("Sent gate burst reply.", extra={"message": message})
 
     async def headline(self, sender: ServerConnection) -> None:
@@ -837,7 +910,7 @@ class SecureWebSocketServer:
             await sender.send(message)
             cards_remaining = len(self.game.headline_deck)
             await self.send_log(
-                f"%s has read a headline. Only {cards_remaining} headlines left: [[Card]]", sender, card
+                f"%s has read a headline. Only {cards_remaining} headlines left: View Card", sender, card
             )
         except EmptyDeckError:
             message = ViewerReply(cards=[]).as_message()
@@ -857,7 +930,7 @@ class SecureWebSocketServer:
         """
         if self.game.active_rumor != None:
             card = self.game.active_rumor
-            message = ViewerReply(cards=[card.to_dict()]).as_message()
+            message = ViewerReply(trigger="view_rumor", cards=[card.to_dict(state=CardViewState.RUMOR)]).as_message()
             await sender.send(message)
             _logger.info("Successfully view_rumor.")
             return
@@ -883,6 +956,39 @@ class SecureWebSocketServer:
         error_message = ErrorReply("There were no active rumors!").as_message()
         await sender.send(error_message)
         _logger.info("Sent error reply.", extra={"message": error_message})
+
+    async def add_counter_rumor(self, sender: ServerConnection) -> None:
+        """Add a counter to a codex card.
+
+        Args:
+            sender: The client that sent the request.
+
+        """
+        if self.game.active_rumor is None:
+            error_message = ErrorReply("No active rumor!").as_message()
+            await sender.send(error_message)
+            _logger.info("Sent error reply.", extra={"message": error_message})
+            return
+        self.game.active_rumor.counters += 1
+
+    async def remove_counter_rumor(self, sender: ServerConnection) -> None:
+        """Remove a counter to a codex card.
+
+        Args:
+            sender: The client that sent the request.
+
+        """
+        if self.game.active_rumor is None:
+            error_message = ErrorReply("No active rumor!").as_message()
+            await sender.send(error_message)
+            _logger.info("Sent error reply.", extra={"message": error_message})
+            return
+        if self.game.active_rumor.counters <= 0:
+            error_message = ErrorReply("No counters to remove!").as_message()
+            await sender.send(error_message)
+            _logger.info("Sent error reply.", extra={"message": error_message})
+            return
+        self.game.active_rumor.counters -= 1
 
     async def undo(self, sender: ServerConnection) -> None:
         """Handle an undo request.
@@ -911,10 +1017,8 @@ class SecureWebSocketServer:
             error_message = ErrorReply("There were no good states to backup to!").as_message()
             await sender.send(error_message)
             _logger.info("Sent error reply.", extra={"message": error_message})
-            self.game_states=cur_states
+            self.game_states = cur_states
             self.future_states = cur_futures
-
-        
 
     async def redo(self, sender: ServerConnection) -> None:
         """Handle an redo request.

@@ -3,6 +3,7 @@
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
+from typing import Any
 
 
 @dataclass
@@ -54,6 +55,28 @@ class ErrorReply(BaseMessage):
     def __init__(self, message: str) -> None:
         super().__init__(action="error")
         self.message = message
+
+
+@dataclass
+class Boot(BaseMessage):
+    """Class for a message booting a player."""
+
+    def __init__(self) -> None:
+        super().__init__(action="boot")
+
+
+@dataclass
+class AllLogMessage(BaseMessage):
+    """Log messages will have this structure."""
+
+    logs: list[dict[str, Any]]
+
+    def __init__(
+        self,
+        logs: list[LogMessage],
+    ) -> None:
+        super().__init__(action="all_logs")
+        self.logs = [asdict(message) for message in logs]
 
 
 @dataclass
@@ -111,7 +134,11 @@ class ViewerReply(BaseMessage):
     """Class for replies that will show the viewer."""
 
     cards: Iterable[Mapping[str, str]]
+    trigger: str | None
+    deck: str | None
 
-    def __init__(self, cards: Iterable[Mapping[str, str]]) -> None:
+    def __init__(self, cards: Iterable[Mapping[str, str]], trigger: str | None = None, deck: str | None = None) -> None:
         super().__init__(action="viewer_reply")
+        self.trigger = trigger
         self.cards = cards
+        self.deck = deck

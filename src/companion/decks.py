@@ -137,6 +137,18 @@ class NeighbourhoodDeck(Deck[NeighbourhoodCard]):
         self.attached_terror: DeckBase[Card] = DeckBase(deck=[])
         self.attached_codex: CodexNeighbourhoodCard | None = None
 
+    def has_codex(self, number: int) -> bool:
+        """Check to see if this deck has a specific codex card attached.
+
+        Args:
+            number: The codex card number.
+
+        Returns:
+            Results of the check.
+
+        """
+        return self.attached_codex is not None and self.attached_codex.number == number
+
     def add_terror(self, card: Card) -> None:
         """Attach a terror card to the deck.
 
