@@ -244,7 +244,7 @@ class GameState:
         return card
 
     def spread_terror(self) -> NeighbourhoodCard | Neighbourhood:
-        """Handle spreading doom.
+        """Handle spreading terror.
 
         Raises:
             ValueError: Raised if terror is not used in this scenario
@@ -266,6 +266,10 @@ class GameState:
         location = DEFAULT_TERROR_NEIGHBOURHOOD[self.settings.scenario]
         self.neighbourhood_decks[location].add_terror(self.terror_deck.draw())
         return location
+
+    def place_terror(self, neighbourhood: Neighbourhood) -> None:
+        """Handle spreading terror to a specific neighbourhood."""
+        self.neighbourhood_decks[neighbourhood].add_terror(self.terror_deck.draw())
 
     def spread_clue(self) -> NeighbourhoodCard:
         """Handle spreading a clue.
@@ -385,6 +389,27 @@ class GameState:
                 self.detach_codex_card(neighbourhood)
                 return
         raise ValueError("Invalid codex card number to return to archive.")
+
+    def modify_counter_on_codex(self, number: int, modification: int) -> None:
+        """Move a card from the codex to the archive.
+
+        Args:
+            number: The codex card number.
+
+        Raises:
+            ValueError: Raised if that number isn't available to be moved.
+
+        """
+        if number in self.codex:
+            self.codex[number].counters = max(0, self.codex[number].counters + modification)
+            return
+        for deck in self.neighbourhood_decks.values():
+            if deck.has_codex(number):
+                if TYPE_CHECKING:
+                    assert deck.attached_codex is not None
+                deck.attached_codex.counters = max(0, deck.attached_codex.counters + modification)
+                return
+        raise ValueError("Invalid codex card to add or remove counters.")
 
     def flip_codex(self, number: int) -> Card:
         """Move a card from the codex to the archive.

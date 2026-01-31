@@ -213,7 +213,7 @@ class CodexNeighbourhoodCard(CodexCard, NeighbourhoodCard):
             is_monster=False,
             can_attach=can_attach,
             is_encounter=is_encounter,
-            counters=-1,
+            counters=0,
         )
         self.neighbourhood = neighbourhood
         self.is_event = False

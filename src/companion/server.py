@@ -270,6 +270,10 @@ class SecureWebSocketServer:
                 self.backup_game()
                 await self.spread_terror(sender)
                 await self.update()
+            case "place_terror":
+                self.backup_game()
+                await self.place_terror(json_message, sender)
+                await self.update()
             case "gate_burst":
                 self.backup_game()
                 await self.gate_burst(sender)
@@ -732,13 +736,13 @@ class SecureWebSocketServer:
             sender: The client that sent the request.
 
         """
-        number = json_message["codex"]
-        if number not in self.game.codex:
-            error_message = ErrorReply("Can't find codex card.").as_message()
+        try:
+            self.game.modify_counter_on_codex(json_message["codex"], 1)
+        except ValueError:
+            error_message = ErrorReply("Invalid codex card number!").as_message()
             await sender.send(error_message)
             _logger.info("Sent error reply.", extra={"message": error_message})
             return
-        self.game.codex[number].counters += 1
 
     async def remove_counter_codex(self, json_message: Mapping[str, int], sender: ServerConnection) -> None:
         """Remove a counter to a codex card.
@@ -752,18 +756,13 @@ class SecureWebSocketServer:
             sender: The client that sent the request.
 
         """
-        number = json_message["codex"]
-        if number not in self.game.codex:
-            error_message = ErrorReply("Can't find codex card.").as_message()
+        try:
+            self.game.modify_counter_on_codex(json_message["codex"], -1)
+        except ValueError:
+            error_message = ErrorReply("Invalid codex card number!").as_message()
             await sender.send(error_message)
             _logger.info("Sent error reply.", extra={"message": error_message})
             return
-        if self.game.codex[number].counters <= 0:
-            error_message = ErrorReply("No counters to remove!").as_message()
-            await sender.send(error_message)
-            _logger.info("Sent error reply.", extra={"message": error_message})
-            return
-        self.game.codex[number].counters -= 1
 
     async def draw_terror(self, json_message: Mapping[str, str], sender: ServerConnection) -> None:
         """Draw a terror card attached to a neighbourhood deck.
@@ -870,6 +869,35 @@ class SecureWebSocketServer:
                 await self.send_log(
                     f"%s has spread terror to the {result.neighbourhood.value}: View Card", sender, result
                 )
+            _logger.info("Successfully spread terror.", extra={"result": result})
+        except EmptyDeckError:
+            await self.ack("No Terror Cards Remaining!", sender)
+            await self.send_log(
+                "%s tried to spread terror, but the Terror deck was empty! Add a doom to the sheet instead.", sender
+            )
+
+    async def place_terror(self, json_message: Mapping[str, str], sender: ServerConnection) -> None:
+        """Place a terror card in a specific neighbourhood.
+
+        Expected input:
+        {
+            "deck": <str>
+        }
+
+        Args:
+            json_message: The message from the socket
+            sender: The client that sent the request.
+
+        Args:
+            json_message: _description_
+            sender: _description_
+
+        """
+        try:
+            neighbourhood = json_message["deck"]
+            result = self.game.place_terror(Neighbourhood(neighbourhood))
+            await self.ack("Terror Spread!", sender)
+            await self.send_log(f"%s has spread terror to the {neighbourhood} neighbourhood!", sender)
             _logger.info("Successfully spread terror.", extra={"result": result})
         except EmptyDeckError:
             await self.ack("No Terror Cards Remaining!", sender)

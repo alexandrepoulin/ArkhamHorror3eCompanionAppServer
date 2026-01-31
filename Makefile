@@ -123,6 +123,6 @@ rmzone:
 	rm -rf resources/triaged_images/*/*Zone.Identifier*;
 	rm -rf resources/triaged_images/*/*/*Zone.Identifier*;
 
-.PHONY: send-pi
-send-pi:
+.PHONY: push-pi
+push-pi:
 	scp /mnt/c/Users/Alexandre/AndroidStudioProjects/ArkhamHorror3eCompanion/app/release/app-release.apk alex@pi.local:/home/alex/projects/simple_server/files/AH3E-companion.apk
