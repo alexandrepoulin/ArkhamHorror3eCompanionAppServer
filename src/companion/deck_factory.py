@@ -6,7 +6,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from companion.cards import CODEX_CARDS, EVENT_CARDS, HEADLINE_CARDS, NEIGHBOURHOOD_CARDS, TERROR_CARDS
-from companion.decks import ArchiveDeck, Deck, EventDeck, NeighbourhoodDeck
+from companion.decks import AllHistories, ArchiveDeck, Deck, EventDeck, NeighbourhoodDeck
 from companion.mappings import (
     CODEX_ATTACHABLE,
     CODEX_ENCOUNTERS,
@@ -22,6 +22,7 @@ from companion.util_classes import (
     Card,
     CodexCard,
     CodexNeighbourhoodCard,
+    DeckLabel,
     Expansions,
     HeadlineCard,
     Neighbourhood,
@@ -35,7 +36,7 @@ _number_re = re.compile(r"(\d+)")
 
 
 # Terror decks
-def create_terror_deck(settings: GameSettings) -> tuple[Deck[Card], str] | tuple[None, None]:
+def create_terror_deck(settings: GameSettings) -> tuple[Deck[Card], str]:
     """Create the terror deck if applicable.
 
     Args:
@@ -46,7 +47,7 @@ def create_terror_deck(settings: GameSettings) -> tuple[Deck[Card], str] | tuple
 
     """
     if (terror := SCENARIO_TERROR_MAP.get(settings.scenario)) is None:
-        return None, None
+        return Deck(deck=[], card_back="empty_back"), "NO TERROR"
 
     back = TERROR_CARDS[terror]["back"].lower()
     deck = Deck(
@@ -89,7 +90,7 @@ def create_headline_deck(settings: GameSettings) -> Deck[HeadlineCard]:
 
 def create_scenario_neighbourhoods_deck(
     settings: GameSettings,
-) -> tuple[dict[Neighbourhood, Deck[NeighbourhoodCard]], dict[Neighbourhood, Deck[NeighbourhoodCard]]]:
+) -> tuple[dict[Neighbourhood, NeighbourhoodDeck], dict[Neighbourhood, NeighbourhoodDeck]]:
     """Create the required neighbourhood decks.
 
     Args:
@@ -103,18 +104,18 @@ def create_scenario_neighbourhoods_deck(
     need_now = required["start"]
     set_aside = required.get("later", [])
 
-    decks_at_start: dict[Neighbourhood, Deck[NeighbourhoodCard]] = {}
+    decks_at_start: dict[Neighbourhood, NeighbourhoodDeck] = {}
     for neighbourhood in need_now:
         decks_at_start[neighbourhood] = create_neighbourhoods_deck(settings, neighbourhood)
 
-    decks_set_aside: dict[Neighbourhood, Deck[NeighbourhoodCard]] = {}
+    decks_set_aside: dict[Neighbourhood, NeighbourhoodDeck] = {}
     for neighbourhood in set_aside:
         decks_set_aside[neighbourhood] = create_neighbourhoods_deck(settings, neighbourhood)
 
     return (decks_at_start, decks_set_aside)
 
 
-def create_neighbourhoods_deck(settings: GameSettings, neighbourhood: Neighbourhood) -> Deck[NeighbourhoodCard]:
+def create_neighbourhoods_deck(settings: GameSettings, neighbourhood: Neighbourhood) -> NeighbourhoodDeck:
     """Create a specific neighbourhood deck.
 
     Args:
@@ -255,12 +256,23 @@ def create_all_scenario_decks(settings: GameSettings) -> dict[str, Any]:
     event_decks_later = event_deck.remove_neighbourhood(list(neighbourhood_later.keys()))
     terror_deck, terror_deck_name = create_terror_deck(settings)
 
+    all_histories = AllHistories(
+        {
+            **neighbourhood_needs,
+            DeckLabel.EVENT_DECK: event_deck,
+            DeckLabel.EVENT_DISCARD: EventDeck(deck=[]),
+            DeckLabel.ACTION_REQUIRED: EventDeck(deck=[]),
+            DeckLabel.HEADLINE: create_headline_deck(settings),
+            DeckLabel.RUMOR: Deck(deck=[], card_back=HEADLINE_CARDS["back"].lower()),
+            DeckLabel.CODEX: ArchiveDeck(archive={}, card_back="codex_61_back"),
+            DeckLabel.ARCHIVE: create_archive(settings),
+            DeckLabel.TERROR: terror_deck,
+        }
+    )
+
     return {
-        "Neighbourhood_Decks": neighbourhood_needs,
-        "Event_deck": event_deck,
-        "Terror_deck": terror_deck,
+        "all_histories": all_histories,
         "Terror_deck_name": terror_deck_name,
-        "Headline_deck": create_headline_deck(settings),
-        "Archive_deck": create_archive(settings),
+        "neighbourhoods": list(neighbourhood_needs.keys()),
         "later": {"Event_Decks": event_decks_later, "Neighbourhoods": neighbourhood_later},
     }

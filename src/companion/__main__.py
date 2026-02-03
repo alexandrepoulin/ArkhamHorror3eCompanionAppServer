@@ -17,6 +17,7 @@ async def async_main() -> None:
 
 
 def main() -> None:
+    """Run the app."""
     asyncio.run(async_main())
 
 

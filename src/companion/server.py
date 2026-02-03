@@ -11,12 +11,13 @@ from typing import TYPE_CHECKING
 from structlog import get_logger
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import WebSocketException
-from websockets.http11 import Request
 
 from companion.message_handler import MessageHandler
 
 if TYPE_CHECKING:
     from logging import Logger
+
+    from websockets.http11 import Request
 
 _logger: Logger = get_logger(__name__)
 
@@ -47,15 +48,10 @@ class SecureWebSocketServer:
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 
         # Load your certificate and private key
-        # TO DO: generate this using
+        # to create a new cert:
         # openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -sha256 -days 365 -nodes
         cert_path = Path("/app/cert.pem")
         key_path = Path("/app/key.pem")
-
-        # cert_path = Path("/home/alex/projects/companion/nogit/cert.pem")
-        # key_path = Path("/home/alex/projects/companion/nogit/key.pem")
-
-        # ssl_context.set_ciphers("DEFAULT@SECLEVEL=1")
 
         ssl_context.load_cert_chain(cert_path, key_path)
         ssl_context.verify_mode = ssl.CERT_NONE
@@ -65,8 +61,8 @@ class SecureWebSocketServer:
         """Validate WebSocket upgrade request before accepting.
 
         Args:
-            path: The path indicated in the request.
-            headers: The headers for the request.
+            _: The server connection
+            request: The request object
 
         Raises:
             WebSocketException: Raised if the request was invalid.

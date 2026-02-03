@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any
 
 
-def getExpansionText(expansions: int) -> str:
+def get_expansion_text(expansions: int) -> str:
     """Create the string of the expansions based on the bit mask.
 
     Args:
@@ -27,6 +27,39 @@ def getExpansionText(expansions: int) -> str:
     if 4 & expansions:
         used.append("Secrets of the Order")
     return ", ".join(used)
+
+
+class Commands(str, Enum):
+    """List of accepted actions by the server."""
+
+    START_GAME = "start_game"
+    CONNECT = "connect"
+    RECONNECT = "reconnect"
+    DRAW = "draw"
+    RESOLVE_EVENT = "resolve_event"
+    VIEW_DISCARD = "view_discard"
+    VIEW_CODEX = "view_codex"
+    VIEW_ARCHIVE = "view_archive"
+    ADD_CODEX = "add_codex"
+    FLIP_CODEX = "flip_codex"
+    REMOVE_CODEX = "remove_codex"
+    VIEW_ATTACHED_CODEX = "view_attached_codex"
+    ADD_COUNTER_CODEX = "add_counter_codex"
+    REMOVE_COUNTER_CODEX = "remove_counter_codex"
+    DRAW_TERROR = "draw_terror"
+    ADD_DECK = "add_deck"
+    SPREAD_CLUE = "spread_clue"
+    SPREAD_DOOM = "spread_doom"
+    SPREAD_TERROR = "spread_terror"
+    PLACE_TERROR = "place_terror"
+    GATE_BURST = "gate_burst"
+    HEADLINE = "headline"
+    VIEW_RUMOR = "view_rumor"
+    REMOVE_RUMOR = "remove_rumor"
+    ADD_COUNTER_RUMOR = "add_counter_rumor"
+    REMOVE_COUNTER_RUMOR = "remove_counter_rumor"
+    UNDO = "undo"
+    REDO = "redo"
 
 
 class Scenarios(str, Enum):
@@ -129,8 +162,24 @@ class Neighbourhood(str, Enum):
     YUGGOTH_EMERGENT = "Yuggoth Emergent"
 
 
+class DeckLabel(str, Enum):
+    """Labels for various non-neighbourhood decks."""
+
+    EVENT_DECK = "Event Deck"
+    EVENT_DISCARD = "Event Discard"
+    HEADLINE = "Headline"
+    CODEX = "Codex"
+    ARCHIVE = "Archive"
+    TERROR = "Terror"
+    RUMOR = "Rumor"
+    ACTION_REQUIRED = "Action Required"
+
+
+Label = DeckLabel | Neighbourhood
+
+
 class CardViewState(str, Enum):
-    """The various states a card could be in when viewing"""
+    """The various states a card could be in when viewing."""
 
     FACE_BACK = "face_back"  # buttons: front and back, starting on the front side
     BACK_FACE = "back_face"  # buttons: front and back, starting on the back side
@@ -152,7 +201,8 @@ class Card:
         """Convert an instance of a Card or a subclass into something that can be sent as a message.
 
         Args:
-            needs_resolving: True if this is an event card drawn from a neighbourhood deck, False otherwise.
+            state: The state of the card in the viewer.
+            identifier: Unique id used when resolving encounters.
 
         Returns:
             A dict of info needed for viewing.
@@ -202,8 +252,19 @@ class CodexNeighbourhoodCard(CodexCard, NeighbourhoodCard):
     """A codex card associated with a neighbourhood."""
 
     def __init__(
-        self, /, face: str, back: str, number: int, can_attach: bool, is_encounter: bool, neighbourhood: Neighbourhood
-    ):
+        self, *, face: str, back: str, number: int, can_attach: bool, is_encounter: bool, neighbourhood: Neighbourhood
+    ) -> None:
+        """Initialize the class.
+
+        Args:
+            face: The face of the card.
+            back: The back of the card.
+            number: The codex number.
+            can_attach: Whether the card can attach to a neighbourhood deck.
+            is_encounter: Whether the card is an encounter.
+            neighbourhood: Which neighbourhood this card is related to, if any.
+
+        """
         super().__init__(
             face=face,
             back=back,

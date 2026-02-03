@@ -3,23 +3,36 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
-from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 
 from companion.deck_factory import create_all_scenario_decks, get_neighbourhood_back_path
-from companion.decks import ArchiveDeck, Deck, EmptyDeckError, EventDeck, NeighbourhoodDeck
-from companion.mappings import DEFAULT_TERROR_NEIGHBOURHOOD
+from companion.decks import (
+    ActionRequiredDeck,
+    AllHistories,
+    ArchiveDeck,
+    Deck,
+    EmptyDeckError,
+    EventDeck,
+    NeighbourhoodDeck,
+    PlayerHistories,
+)
+from companion.mappings import CODEX_SHUFFLE_ENCOUNTERS, CODEX_TOP_ENCOUNTERS, DEFAULT_TERROR_NEIGHBOURHOOD
 from companion.util_classes import (
     Card,
     CardViewState,
     CodexNeighbourhoodCard,
+    DeckLabel,
     HeadlineCard,
+    Label,
     Neighbourhood,
     NeighbourhoodCard,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from websockets.asyncio.server import ServerConnection
+
     from companion.util_classes import GameSettings
 
 
@@ -35,30 +48,113 @@ class GameState:
         """
         self.settings = settings
         all_decks = create_all_scenario_decks(settings)
-        self.neighbourhood_decks: dict[Neighbourhood, NeighbourhoodDeck] = all_decks["Neighbourhood_Decks"]
-        self.event_deck: EventDeck = all_decks["Event_deck"]
-        self.event_deck_discard: EventDeck = EventDeck(deck=[])
-        self.headline_deck: Deck[HeadlineCard] = all_decks["Headline_deck"]
-        self.later_decks: dict[str, dict[Neighbourhood, Any]] = all_decks["later"]
-        self.archive_deck: ArchiveDeck = all_decks["Archive_deck"]
-        self.codex: ArchiveDeck = ArchiveDeck(archive={}, card_back="codex_61_back")
 
-        self.has_terror = all_decks["Terror_deck"] is not None
-        self.terror_deck: Deck[Card] = all_decks["Terror_deck"]
+        self.decks: AllHistories = all_decks["all_histories"]
         self.terror_deck_name: str = all_decks["Terror_deck_name"]
+        self.has_terror = len(self.decks.get(DeckLabel.TERROR)) == 0
+        self.neighbourhoods: list[Neighbourhood] = all_decks["neighbourhoods"]
+        self.later_decks = all_decks["later"]
 
-        self.active_rumor: HeadlineCard | None = None
+        self.player_histories = PlayerHistories()
 
-        self.temporary_zone: dict[str, NeighbourhoodCard] = {}
-
-    def is_stable(self) -> bool:
-        """Whether this is a game state we can revert to.
+    ## ------------
+    ## shorthands
+    ## ------------
+    @property
+    def event_deck(self) -> EventDeck:
+        """Return the event deck.
 
         Returns:
-            True if yes, false otherwise.
+            Return the event deck.
 
         """
-        return len(self.temporary_zone) == 0
+        return self.decks.get(DeckLabel.EVENT_DECK)
+
+    @property
+    def discard(self) -> EventDeck:
+        """Return the discard deck.
+
+        Returns:
+            Return the discard deck.
+
+        """
+        return self.decks.get(DeckLabel.EVENT_DISCARD)
+
+    @property
+    def action_required(self) -> ActionRequiredDeck:
+        """Return the action required deck.
+
+        Returns:
+            Return the action required deck.
+
+        """
+        return self.decks.get(DeckLabel.ACTION_REQUIRED)
+
+    @property
+    def codex(self) -> ArchiveDeck:
+        """Return the codex deck.
+
+        Returns:
+            Return the codex deck.
+
+        """
+        return self.decks.get(DeckLabel.CODEX)
+
+    @property
+    def archive(self) -> ArchiveDeck:
+        """Return the archive deck.
+
+        Returns:
+            Return the archive deck.
+
+        """
+        return self.decks.get(DeckLabel.ARCHIVE)
+
+    @property
+    def headline(self) -> Deck[HeadlineCard]:
+        """Return the headline deck.
+
+        Returns:
+            Return the headline deck.
+
+        """
+        return self.decks.get(DeckLabel.HEADLINE)
+
+    @property
+    def rumor(self) -> Deck[HeadlineCard]:
+        """Return the rumor deck.
+
+        Returns:
+            Return the rumor deck.
+
+        """
+        return self.decks.get(DeckLabel.RUMOR)
+
+    @property
+    def terror(self) -> Deck[Card]:
+        """Return the terror deck.
+
+        Returns:
+            Return the terror deck.
+
+        """
+        return self.decks.get(DeckLabel.TERROR)
+
+    def nb_deck(self, neighbourhood: Neighbourhood) -> NeighbourhoodDeck:
+        """Return the deck from a neighbourhood.
+
+        Args:
+            neighbourhood: The neighbourhood to get.
+
+        Returns:
+            Return the deck from a neighbourhood.
+
+        """
+        return self.decks.get(neighbourhood)
+
+    ## ------------
+    ## real logic
+    ## ------------
 
     def get_neighbourhood_back(self, neighbourhood: Neighbourhood) -> str:
         """Get the back of a neighbourhood card.
@@ -67,47 +163,43 @@ class GameState:
             neighbourhood: The Neighbourhood to get the back for.
 
         Returns:
-            The path to the image file.
+            The name of the image.
 
         """
-        return self.neighbourhood_decks[neighbourhood].card_back
+        return self.nb_deck(neighbourhood).card_back
 
     def get_terror_back(self) -> str:
         """Get the back of the terror deck.
 
         Raises:
             ValueError: Raised if terror is not used in this scenario.
-            EmptyDeckError: Raised if the deck is empty.
 
         Returns:
-            The path to the image file.
+            The name of the image.
 
         """
         if not self.has_terror:
             raise ValueError("This scenario has no Terror deck.")
-        if len(self.terror_deck) == 0:
+        if len(self.terror) == 0:
             return "empty_back"
-        return self.terror_deck.card_back
+        return self.terror.card_back
 
     def get_headline_back(self) -> str:
         """Get the back of the headline deck.
 
-        Raises:
-            EmptyDeckError: Raised if the deck is empty.
-
         Returns:
-            The path to the image file.
+            The name of the image.
 
         """
-        if len(self.headline_deck) == 0:
+        if len(self.headline) == 0:
             return "empty_back"
-        return self.headline_deck.card_back
+        return self.headline.card_back
 
     def get_event_back(self) -> str:
         """Get the back of the event deck.
 
         Returns:
-            The path to the image file.
+            The name of the image.
 
         """
         if len(self.event_deck) == 0:
@@ -117,87 +209,104 @@ class GameState:
     def get_discard_face(self) -> str:
         """Get the face of the event discard pile.
 
-        Raises:
-            EmptyDeckError: Raised if the pile is empty.
-
         Returns:
-            The path to the image file.
+            The name of the image.
 
         """
-        if len(self.event_deck_discard) == 0:
+        if len(self.discard) == 0:
             return "empty_face"
-        return self.event_deck_discard.peek_bottom_card().face
+        return self.discard.peek_bottom_card().face
 
-    def draw_from_neighbourhood(self, neighbourhood: Neighbourhood) -> tuple[NeighbourhoodCard, str]:
+    def draw_from_neighbourhood(
+        self, neighbourhood: Neighbourhood, sender: ServerConnection
+    ) -> tuple[NeighbourhoodCard, str]:
         """Handle a regular encounter from a neighbourhood.
 
         Args:
             neighbourhood: The target neighbourhood.
+            sender: The player taking the action.
 
         Returns:
             The neighbourhood card
 
         """
-        card = self.neighbourhood_decks[neighbourhood].draw()
+        self.decks.add(neighbourhood)
+        changes: set[Label] = {neighbourhood}
+        card = self.nb_deck(neighbourhood).draw()
         temp_uuid = str(uuid.uuid4())
         if isinstance(card, CodexNeighbourhoodCard):
+            changes.add(DeckLabel.ARCHIVE)
+            self.decks.add(DeckLabel.ARCHIVE)
             card.is_flipped = False
-            self.archive_deck.add_card(card)
+            self.archive.add_card(card)
         elif card.is_event:
-            self.temporary_zone[temp_uuid] = card
+            changes.add(DeckLabel.ACTION_REQUIRED)
+            self.decks.add(DeckLabel.ACTION_REQUIRED)
+            self.action_required[temp_uuid] = card
         else:
-            self.neighbourhood_decks[neighbourhood].bottom(card)
+            self.nb_deck(neighbourhood).bottom(card)
+        self.player_histories.record_change(sender, changes)
         return card, temp_uuid
 
-    def resolve_temporary_zone(self, identifier: str, passed: bool) -> None:
+    def resolve_temporary_zone(self, *, identifier: str, passed: bool, sender: ServerConnection) -> None:
         """Handle the result of whether an event card was succeeded or not.
 
         Args:
             identifier: The identifier for the card in the temporary zone.
             passed: True if the card should go back to the event deck, false if it should be reshuffled in.
-
-        Returns:
-            The neighbourhood card
+            sender: The player taking the action.
 
         """
-        if identifier not in self.temporary_zone:
+        if identifier not in self.action_required:
             raise ValueError
-        card = self.temporary_zone.pop(identifier)
+        self.decks.add(DeckLabel.ACTION_REQUIRED)
+        changes: set[Label] = {DeckLabel.ACTION_REQUIRED}
+        card = self.action_required.pop(identifier)
         if passed:
-            self.event_deck_discard.bottom(card)
+            self.decks.add(DeckLabel.EVENT_DISCARD)
+            changes.add(DeckLabel.EVENT_DISCARD)
+            self.player_histories.record_change(sender, changes)
+            self.discard.bottom(card)
             return
-        self.neighbourhood_decks[card.neighbourhood].shuffle_into_top_three(card)
+        self.decks.add(card.neighbourhood)
+        changes.add(card.neighbourhood)
+        self.player_histories.record_change(sender, changes)
+        self.nb_deck(card.neighbourhood).shuffle_into_top_three(card)
 
-    def draw_terror_from_neighbourhood(self, neighbourhood: Neighbourhood) -> Card:
+    def draw_terror_from_neighbourhood(self, neighbourhood: Neighbourhood, sender: ServerConnection) -> Card:
         """Draw a terror card that has been attached to a neighbourhood.
 
         Args:
             neighbourhood: The target neighbourhood.
+            sender: The player taking the action.
+
+        Raises:
+            EmptyDeckError: raised if the deck is empty.
 
         Returns:
             The terror card
 
         """
-        card = self.neighbourhood_decks[neighbourhood].attached_terror.draw()
-        self.terror_deck.bottom(card)
+        if len(self.nb_deck(neighbourhood).attached_terror) == 0:
+            raise EmptyDeckError
+        changes: set[Label] = {neighbourhood, DeckLabel.TERROR}
+        self.decks.add(changes)
+        self.player_histories.record_change(sender, changes)
+        card = self.nb_deck(neighbourhood).attached_terror.draw()
+        self.terror.bottom(card)
         return card
 
-    def detach_codex_card(self, neighbourhood: Neighbourhood) -> None:
-        """Attach a codex card from the codex to a neighbourhood.
+    def _detach_codex_card(self, neighbourhood: Neighbourhood) -> None:
+        """Detach a codex card from the codex to a neighbourhood.
 
         Args:
             neighbourhood: The neighbourhood to get the card from.
 
-        Returns:
-            The card or None
-
         """
-        if self.neighbourhood_decks[neighbourhood].attached_codex is None:
-            return
-        card = self.neighbourhood_decks[neighbourhood].pop_codex_card()
+        card = self.nb_deck(neighbourhood).pop_codex_card()
         card.is_flipped = False
         card.counters = 0
-        self.archive_deck.add_card(card)
+        self.archive.add_card(card)
 
     def view_codex_card(self, neighbourhood: Neighbourhood) -> CodexNeighbourhoodCard | None:
         """View a codex card from the codex to a neighbourhood.
@@ -209,11 +318,11 @@ class GameState:
             The card or None
 
         """
-        if self.neighbourhood_decks[neighbourhood].attached_codex is None:
+        if self.nb_deck(neighbourhood).attached_codex is None:
             return None
-        return self.neighbourhood_decks[neighbourhood].attached_codex
+        return self.nb_deck(neighbourhood).attached_codex
 
-    def draw_from_event_deck(self, *, from_top: bool = True) -> NeighbourhoodCard:
+    def _draw_from_event_deck(self, *, from_top: bool = True) -> NeighbourhoodCard:
         """Handle a drawing from the top or bottom of the event deck.
 
         Raises:
@@ -226,11 +335,16 @@ class GameState:
         try:
             return self.event_deck.draw(from_top=from_top)
         except EmptyDeckError:
-            self.event_deck.shuffle_discard(self.event_deck_discard)
+            self.decks.add(DeckLabel.EVENT_DISCARD)
+            self.event_deck.shuffle_discard(self.discard)
+            self.discard.clear()
             raise
 
-    def spread_doom(self) -> NeighbourhoodCard:
+    def spread_doom(self, sender: ServerConnection) -> NeighbourhoodCard:
         """Handle spreading doom.
+
+        Args:
+            sender: The player taking the action.
 
         Raises:
             EmptyDeckError: Raised if the deck is empty.
@@ -239,12 +353,20 @@ class GameState:
             The event card card that was drawn.
 
         """
-        card = self.draw_from_event_deck(from_top=False)
-        self.event_deck_discard.bottom(card)
+        changes: set[Label] = {DeckLabel.EVENT_DECK, DeckLabel.EVENT_DISCARD}
+        self.decks.add(DeckLabel.EVENT_DECK)
+        self.player_histories.record_change(sender, changes)
+
+        card = self._draw_from_event_deck(from_top=False)
+        self.decks.add(DeckLabel.EVENT_DISCARD)
+        self.discard.bottom(card)
         return card
 
-    def spread_terror(self) -> NeighbourhoodCard | Neighbourhood:
+    def spread_terror(self, sender: ServerConnection) -> NeighbourhoodCard | Neighbourhood:
         """Handle spreading terror.
+
+        Args:
+            sender: The player taking the action.
 
         Raises:
             ValueError: Raised if terror is not used in this scenario
@@ -256,23 +378,55 @@ class GameState:
         """
         if not self.has_terror:
             raise ValueError("This scenario has no Terror deck.")
-        if len(self.terror_deck) == 0:
+        if len(self.terror) == 0:
             raise EmptyDeckError
-        if len(self.event_deck_discard) > 0:
-            location_card = self.event_deck_discard.peek_bottom_card()
+
+        if len(self.discard) > 0:
+            location_card = self.discard.peek_bottom_card()
             location = location_card.neighbourhood
-            self.neighbourhood_decks[location].add_terror(self.terror_deck.draw())
+
+            changes: set[Label] = {DeckLabel.TERROR, location}
+            self.decks.add(changes)
+            self.player_histories.record_change(sender, changes)
+
+            self.nb_deck(location).add_terror(self.terror.draw())
             return location_card
+
+        changes: set[Label] = {DeckLabel.TERROR}
+        self.decks.add(changes)
+        self.player_histories.record_change(sender, changes)
+
         location = DEFAULT_TERROR_NEIGHBOURHOOD[self.settings.scenario]
-        self.neighbourhood_decks[location].add_terror(self.terror_deck.draw())
+        self.nb_deck(location).add_terror(self.terror.draw())
         return location
 
-    def place_terror(self, neighbourhood: Neighbourhood) -> None:
-        """Handle spreading terror to a specific neighbourhood."""
-        self.neighbourhood_decks[neighbourhood].add_terror(self.terror_deck.draw())
+    def place_terror(self, neighbourhood: Neighbourhood, sender: ServerConnection) -> None:
+        """Handle spreading terror to a specific neighbourhood.
 
-    def spread_clue(self) -> NeighbourhoodCard:
+        Args:
+            neighbourhood: The neighbourhood to get the card from.
+            sender: The player taking the action.
+
+        Raises:
+            ValueError: Raised if terror is not used in this scenario
+            EmptyDeckError: Raised if the deck is empty.
+
+        """
+        if not self.has_terror:
+            raise ValueError("This scenario has no Terror deck.")
+        if len(self.terror) == 0:
+            raise EmptyDeckError
+
+        changes: set[Label] = {DeckLabel.TERROR, neighbourhood}
+        self.decks.add(changes)
+        self.player_histories.record_change(sender, changes)
+        self.nb_deck(neighbourhood).add_terror(self.terror.draw())
+
+    def spread_clue(self, sender: ServerConnection) -> NeighbourhoodCard:
         """Handle spreading a clue.
+
+        Args:
+            sender: The player taking the action.
 
         Raises:
             EmptyDeckError: Raised if the deck is empty.
@@ -281,13 +435,27 @@ class GameState:
             The neighbourhood card that was shuffled.
 
         """
-        card = self.draw_from_event_deck()
-        self.neighbourhood_decks[card.neighbourhood].shuffle_into_top_three(card)
+        changes: set[Label] = {DeckLabel.EVENT_DECK}
+        self.decks.add(DeckLabel.EVENT_DECK)
+
+        try:
+            card = self._draw_from_event_deck()
+        except EmptyDeckError:
+            changes.add(DeckLabel.EVENT_DISCARD)
+            self.player_histories.record_change(sender, changes)
+            raise
+        changes.add(card.neighbourhood)
+        self.decks.add(card.neighbourhood)
+        self.player_histories.record_change(sender, changes)
+        self.nb_deck(card.neighbourhood).shuffle_into_top_three(card)
         return card
 
-    def gate_burst(self) -> NeighbourhoodCard | None:
+    def gate_burst(self, sender: ServerConnection) -> NeighbourhoodCard | None:
         """Handle a gate burst.
 
+        Args:
+            sender: The player taking the action.
+
         Raises:
             EmptyDeckError: Raised if the deck is empty.
 
@@ -295,17 +463,20 @@ class GameState:
             The card that was drawn
 
         """
-        card = None
-        if len(self.event_deck) > 0:
-            card = self.event_deck.draw()
-            self.event_deck_discard.bottom(card)
-        self.event_deck.shuffle_discard(self.event_deck_discard)
-        self.event_deck_discard = EventDeck(deck=[])
+        changes: set[Label] = {DeckLabel.EVENT_DECK, DeckLabel.EVENT_DISCARD}
+        self.decks.add(changes)
+        self.player_histories.record_change(sender, changes)
+        card = self._draw_from_event_deck()
+        self.event_deck.shuffle_discard(self.discard)
+        self.discard.clear()
         return card
 
-    def draw_headline(self) -> HeadlineCard:
+    def draw_headline(self, sender: ServerConnection) -> HeadlineCard:
         """Handle a headline.
 
+        Args:
+            sender: The player taking the action.
+
         Raises:
             EmptyDeckError: Raised if the deck is empty.
 
@@ -313,10 +484,43 @@ class GameState:
             The card that was drawn
 
         """
-        card = self.headline_deck.draw()
+        changes: set[Label] = {DeckLabel.HEADLINE}
+        self.decks.add(DeckLabel.HEADLINE)
+
+        card = self.headline.draw()
         if card.is_rumor:
-            self.active_rumor = card
+            changes.add(DeckLabel.RUMOR)
+            self.decks.add(DeckLabel.RUMOR)
+            self.rumor.clear()
+            self.rumor.append(card)
+
+        self.player_histories.record_change(sender, changes)
         return card
+
+    def clear_rumor(self, sender: ServerConnection) -> None:
+        """Clear the current rumor.
+
+        Args:
+            sender: The player who is doing the action.
+
+        """
+        changes: set[Label] = {DeckLabel.RUMOR}
+        self.decks.add(DeckLabel.RUMOR)
+        self.player_histories.record_change(sender, changes)
+        self.rumor.clear()
+
+    def modify_counter_on_rumor(self, modification: int, sender: ServerConnection) -> None:
+        """Add or remove counters from the rumor.
+
+        Args:
+            modification: The number of counters to change.
+            sender: The player taking the action.
+
+        """
+        changes: set[Label] = {DeckLabel.RUMOR}
+        self.decks.add(changes)
+        self.player_histories.record_change(sender, changes)
+        self.rumor[0].counters = max(0, self.rumor[0].counters + modification)
 
     def get_archive(self) -> list[dict[str, Any]]:
         """Return the whole archive.
@@ -326,7 +530,7 @@ class GameState:
 
         """
         return sorted(
-            [card.to_dict(state=CardViewState.ARCHIVE) for card in self.archive_deck.values()],
+            [card.to_dict(state=CardViewState.ARCHIVE) for card in self.archive.values()],
             key=lambda x: x["number"],
         )
 
@@ -344,119 +548,212 @@ class GameState:
 
         return sorted(result, key=lambda x: x["number"])
 
-    def add_from_archive(self, number: int) -> None:
-        """Move a card from the archive to the codex.
+    def add_from_archive(self, number: int, sender: ServerConnection) -> None:
+        """Move a card out of the archive.
 
         Args:
             number: The codex card number.
+            sender: The player taking the action.
 
         Raises:
             ValueError: Raised if that number isn't available to be moved.
 
         """
-        if number not in self.archive_deck:
+        if number not in self.archive:
             raise ValueError("Invalid archive card number to add to codex.")
-        card = self.archive_deck.get_card(number)
-        if isinstance(card, CodexNeighbourhoodCard):
-            if card.can_attach:
-                self.neighbourhood_decks[card.neighbourhood].attach_codex_card(card)
-            elif card.is_encounter:
-                if 13 <= card.number <= 17:
-                    self.neighbourhood_decks[card.neighbourhood].shuffle_into_top_three(card)
-                elif 161 <= card.number <= 165:
-                    self.neighbourhood_decks[card.neighbourhood].top(card)
-            return
-        self.codex.add_card(card)
 
-    def return_to_archive(self, number: int) -> None:
-        """Move a card from the codex to the archive.
+        changes: set[Label] = {DeckLabel.ARCHIVE}
+        self.decks.add(DeckLabel.ARCHIVE)
+
+        card = self.archive.get_card(number)
+        if not isinstance(card, CodexNeighbourhoodCard):
+            changes.add(DeckLabel.CODEX)
+            self.decks.add(DeckLabel.CODEX)
+            self.player_histories.record_change(sender, changes)
+            self.codex.add_card(card)
+            return
+
+        changes.add(card.neighbourhood)
+        self.decks.add(card.neighbourhood)
+        self.player_histories.record_change(sender, changes)
+
+        if card.can_attach:
+            self.nb_deck(card.neighbourhood).attach_codex_card(card)
+        elif card.is_encounter:
+            if card.number in CODEX_SHUFFLE_ENCOUNTERS:
+                self.nb_deck(card.neighbourhood).shuffle_into_top_three(card)
+            elif card.number in CODEX_TOP_ENCOUNTERS:
+                self.nb_deck(card.neighbourhood).top(card)
+            # TODO: handle card 147-149, see card 142 for instructions
+
+    def return_to_archive(self, number: int, sender: ServerConnection) -> None:
+        """Move a card back to the archive.
 
         Args:
             number: The codex card number.
+            sender: The player taking the action.
 
         Raises:
             ValueError: Raised if that number isn't available to be moved.
 
         """
-        if number in self.codex:
-            card = self.codex.get_card(number)
+        if number in self.decks.get(DeckLabel.CODEX):
+            changes: set[Label] = {DeckLabel.CODEX, DeckLabel.ARCHIVE}
+            self.decks.add(changes)
+            self.player_histories.record_change(sender, changes)
+            card = self.decks.get(DeckLabel.CODEX).get_card(number)
             card.counters = 0
             card.is_flipped = False
-            self.archive_deck.add_card(card)
+            self.decks.get(DeckLabel.ARCHIVE).add_card(card)
             return
-        for neighbourhood, deck in self.neighbourhood_decks.items():
-            if deck.has_codex(number):
-                self.detach_codex_card(neighbourhood)
+        for neighbourhood in self.neighbourhoods:
+            if self.decks.get(neighbourhood).has_codex(number):
+                changes: set[Label] = {neighbourhood, DeckLabel.ARCHIVE}
+                self.decks.add(changes)
+                self.player_histories.record_change(sender, changes)
+                self._detach_codex_card(neighbourhood)
                 return
         raise ValueError("Invalid codex card number to return to archive.")
 
-    def modify_counter_on_codex(self, number: int, modification: int) -> None:
-        """Move a card from the codex to the archive.
+    def modify_counter_on_codex(self, number: int, modification: int, sender: ServerConnection) -> None:
+        """Modify counters on a codex card.
 
         Args:
             number: The codex card number.
+            modification: The change to the number of counters.
+            sender: The player taking the action.
 
         Raises:
             ValueError: Raised if that number isn't available to be moved.
 
         """
         if number in self.codex:
+            changes: set[Label] = {DeckLabel.CODEX}
+            self.decks.add(changes)
+            self.player_histories.record_change(sender, changes)
             self.codex[number].counters = max(0, self.codex[number].counters + modification)
             return
-        for deck in self.neighbourhood_decks.values():
-            if deck.has_codex(number):
-                if TYPE_CHECKING:
-                    assert deck.attached_codex is not None
-                deck.attached_codex.counters = max(0, deck.attached_codex.counters + modification)
+        for neighbourhood in self.neighbourhoods:
+            if self.nb_deck(neighbourhood).has_codex(number):
+                changes: set[Label] = {neighbourhood}
+                self.decks.add(changes)
+                self.player_histories.record_change(sender, changes)
+                self.nb_deck(neighbourhood).modify_codex_counters(modification)
                 return
         raise ValueError("Invalid codex card to add or remove counters.")
 
-    def flip_codex(self, number: int) -> Card:
-        """Move a card from the codex to the archive.
+    def flip_codex(self, number: int, sender: ServerConnection) -> Card:
+        """Flip a codex card.
 
         Args:
             number: The codex card number.
+            sender: The player taking the action.
 
         Raises:
             ValueError: Raised if that number isn't available to be moved.
 
         """
         if number in self.codex:
+            changes: set[Label] = {DeckLabel.CODEX}
+            self.decks.add(changes)
+            self.player_histories.record_change(sender, changes)
             self.codex[number].is_flipped = True
             return self.codex[number]
-        for deck in self.neighbourhood_decks.values():
-            if deck.has_codex(number):
-                if TYPE_CHECKING:
-                    assert deck.attached_codex is not None
-                deck.attached_codex.is_flipped = True
-                return deck.attached_codex
+        for neighbourhood in self.neighbourhoods:
+            if self.nb_deck(neighbourhood).has_codex(number):
+                changes: set[Label] = {neighbourhood}
+                self.decks.add(changes)
+                self.player_histories.record_change(sender, changes)
+                self.nb_deck(neighbourhood).flip_codex()
+                return self.nb_deck(neighbourhood).get_codex_card()  # pyright: ignore[reportReturnType]
         raise ValueError("Invalid codex card number to return to archive.")
 
-    def add_neighbourhood(self, neighbourhood: Neighbourhood) -> None:
-        """Add a list of neighbourhoods to the game.
+    def add_neighbourhood(self, neighbourhood: Neighbourhood, sender: ServerConnection) -> int:
+        """Add a neighbourhood to the game.
 
         Args:
-            neighbourhoods: The list of neighbourhoods to add.
+            neighbourhood: The neighbourhood to add.
+            sender: The player taking the action.
 
         """
-        if neighbourhood in self.later_decks["Event_Decks"]:
-            if neighbourhood == Neighbourhood.THE_UNDERWORLD:
-                self.event_deck = self.event_deck[:-4]
-                self.event_deck += self.later_decks["Event_Decks"][neighbourhood][:2]
-                self.event_deck.shuffle()
-                self.event_deck_discard.bottom(self.later_decks["Event_Decks"][neighbourhood][-1])
-                self.event_deck_discard.bottom(self.later_decks["Event_Decks"][neighbourhood][-2])
-
-                self.neighbourhood_decks[neighbourhood] = deepcopy(self.later_decks["Neighbourhoods"][neighbourhood])
-                del self.later_decks["Neighbourhoods"][neighbourhood]
-                del self.later_decks["Event_Decks"][neighbourhood]
-                return
-            self.event_deck += self.later_decks["Event_Decks"][neighbourhood]
-            self.event_deck.shuffle_discard(self.event_deck_discard)
-            self.event_deck_discard = EventDeck(deck=[])
+        ##Handle this special case
+        if neighbourhood == Neighbourhood.THE_UNDERWORLD:
+            self.neighbourhoods.append(Neighbourhood.THE_UNDERWORLD)
+            changes: set[Label] = {neighbourhood, DeckLabel.EVENT_DECK, DeckLabel.EVENT_DISCARD}
+            self.decks.add(changes)
+            self.player_histories.record_change(sender, changes)
+            doom_to_add = 0
+            for _ in range(4):
+                try:
+                    self._draw_from_event_deck()
+                except EmptyDeckError:
+                    doom_to_add += 1
+            self.event_deck.__add__(self.later_decks["Event_Decks"][neighbourhood][:2])
+            self.event_deck.shuffle()
+            self.discard.bottom(self.later_decks["Event_Decks"][neighbourhood][-1])
+            self.discard.bottom(self.later_decks["Event_Decks"][neighbourhood][-2])
+            self.decks.add_new(neighbourhood, self.later_decks["Neighbourhoods"][neighbourhood])
+            del self.later_decks["Neighbourhoods"][neighbourhood]
             del self.later_decks["Event_Decks"][neighbourhood]
-        self.neighbourhood_decks[neighbourhood] = deepcopy(self.later_decks["Neighbourhoods"][neighbourhood])
+            return doom_to_add
+
+        changes: set[Label] = {neighbourhood}
+        self.decks.add_new(neighbourhood, self.later_decks["Neighbourhoods"][neighbourhood])
         del self.later_decks["Neighbourhoods"][neighbourhood]
+        self.neighbourhoods.append(neighbourhood)
+
+        if neighbourhood in self.later_decks["Event_Decks"]:
+            changes.update({DeckLabel.EVENT_DECK, DeckLabel.EVENT_DISCARD})
+            self.decks.add({DeckLabel.EVENT_DECK, DeckLabel.EVENT_DISCARD})
+
+            self.event_deck.__add__(self.later_decks["Event_Decks"][neighbourhood])
+            self.event_deck.shuffle_discard(self.discard)
+            self.discard.clear()
+            del self.later_decks["Event_Decks"][neighbourhood]
+        self.player_histories.record_change(sender, changes)
+        return 0
+
+    def can_undo(self, player: ServerConnection) -> bool:
+        """Check to see if a player can undo.
+
+        Args:
+            player: The player taking the action.
+
+        Returns:
+            True is yes, False otherwise.
+
+        """
+        return self.player_histories.can_undo(player)
+
+    def can_redo(self, player: ServerConnection) -> bool:
+        """Check to see if a player can undo.
+
+        Args:
+            player: The player taking the action.
+
+        Returns:
+            True is yes, False otherwise.
+
+        """
+        return self.player_histories.can_redo(player)
+
+    def undo(self, player: ServerConnection) -> None:
+        """Perform an undo operation.
+
+        Args:
+            player: The player taking the action.
+
+        """
+        self.decks.undo(self.player_histories.undo(player))
+
+    def redo(self, player: ServerConnection) -> None:
+        """Perform an redo operation.
+
+        Args:
+            player: The player taking the action.
+
+        """
+        self.decks.redo(self.player_histories.redo(player))
 
     def update_info(self) -> dict[str, Any]:
         """Return the information needed to render the decks screen.
@@ -468,12 +765,13 @@ class GameState:
         decks: list[Mapping[str, Any]] = [
             {
                 "name": neighbourhood.value,
-                "visible_image": deck.card_back,
-                "num_cards": len(deck),
-                "has_attached_codex": deck.attached_codex is not None,
-                "num_attached_terror": len(deck.attached_terror),
+                "visible_image": self.nb_deck(neighbourhood).card_back,
+                "num_cards": len(self.nb_deck(neighbourhood)),
+                "has_attached_codex": self.nb_deck(neighbourhood).attached_codex is not None,
+                "num_attached_terror": len(self.nb_deck(neighbourhood).attached_terror),
             }
-            for neighbourhood, deck in self.neighbourhood_decks.items()
+            for neighbourhood in self.neighbourhoods
+            if self.nb_deck(neighbourhood) is not None  # pyright: ignore[reportUnnecessaryComparison]
         ]
 
         decks.extend(
@@ -481,7 +779,7 @@ class GameState:
                 {
                     "name": "Headlines",
                     "visible_image": self.get_headline_back(),
-                    "num_cards": len(self.headline_deck),
+                    "num_cards": len(self.headline),
                     "has_attached_codex": False,
                     "num_attached_terror": 0,
                 },
@@ -495,7 +793,7 @@ class GameState:
                 {
                     "name": "Event Discard",
                     "visible_image": self.get_discard_face(),
-                    "num_cards": len(self.event_deck_discard),
+                    "num_cards": len(self.discard),
                     "has_attached_codex": False,
                     "num_attached_terror": 0,
                 },
@@ -514,17 +812,17 @@ class GameState:
                 {
                     "name": self.terror_deck_name,
                     "visible_image": self.get_terror_back(),
-                    "num_cards": len(self.terror_deck),
+                    "num_cards": len(self.terror),
                     "has_attached_codex": False,
                     "num_attached_terror": 0,
                 }
             )
 
-        if self.active_rumor is not None:
+        if len(self.rumor) > 0:
             decks.append(
                 {
                     "name": "Rumor",
-                    "visible_image": self.active_rumor.face,
+                    "visible_image": self.rumor[0].face,
                     "num_cards": 1,
                     "has_attached_codex": False,
                     "num_attached_terror": 0,
@@ -551,7 +849,7 @@ class GameState:
             }
             for neighbourhood, deck in self.later_decks["Neighbourhoods"].items()
         ]
-        terror_card_back = None if not self.has_terror else self.terror_deck.card_back
+        terror_card_back = None if not self.has_terror else self.terror.card_back
         return {
             "Decks": decks,
             "Additional_Decks": future_decks,

@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections import deque
-from copy import deepcopy
 from typing import TYPE_CHECKING, cast
 
 from bidict import bidict
 from structlog import get_logger
-from websockets.asyncio.server import ServerConnection
 from websockets.exceptions import ConnectionClosedError
 
 from companion.decks import EmptyDeckError
@@ -30,15 +27,18 @@ from companion.util_classes import (
     Card,
     CardViewState,
     CodexNeighbourhoodCard,
+    Commands,
     GameSettings,
     Neighbourhood,
     Scenarios,
-    getExpansionText,
+    get_expansion_text,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Mapping
     from logging import Logger
+
+    from websockets.asyncio.server import ServerConnection
 
 _logger: Logger = get_logger(__name__)
 
@@ -51,8 +51,7 @@ class MessageHandler:
         self.connected_clients: set[ServerConnection] = set()
         self.players: bidict[ServerConnection, str] = bidict()
         self.player_colours: dict[ServerConnection, str] = {}
-        self.game_states: deque[GameState] = deque(maxlen=20)
-        self.future_states: list[GameState] = []
+        self.game_states: GameState | None = None
         self.game_logs: list[LogMessage] = []
 
     @property
@@ -66,17 +65,9 @@ class MessageHandler:
             The current game state.
 
         """
-        if len(self.game_states) >= 1:
-            return self.game_states[-1]
+        if self.game_states is not None:
+            return self.game_states
         raise ValueError("There are no games")
-
-    @property
-    def can_redo(self) -> bool:
-        return len(self.future_states) > 0
-
-    @property
-    def can_undo(self) -> bool:
-        return len(self.game_states) > 1
 
     ## --------------------------------
     ## Connection handling
@@ -131,7 +122,7 @@ class MessageHandler:
 
         if len(self.connected_clients) == 0:
             _logger.info("No players left in game, deleted it.")
-            self.game_states.clear()
+            self.game_states = None
             self.future_states = []
             self.game_logs = []
 
@@ -142,7 +133,7 @@ class MessageHandler:
     ## --------------------------------
 
     async def broadcast(self, message: str) -> None:
-        """Broadcast message to all non-players
+        """Broadcast message to all non-players.
 
         Args:
             message: The message to broadcast.
@@ -154,14 +145,14 @@ class MessageHandler:
         )
 
     async def broadcast_players(self, message: str) -> None:
-        """Broadcast message to all players
+        """Broadcast message to all players.
 
         Args:
             message: The message to broadcast.
 
         """
         await asyncio.gather(
-            *(ws.send(message) for ws in self.players.keys()),
+            *(ws.send(message) for ws in self.players),
             return_exceptions=True,
         )
 
@@ -179,7 +170,7 @@ class MessageHandler:
         """
         message = Ack(message=message).as_message()
         await sender.send(message)
-        _logger.info("Sent Ack", extra={"message": message})
+        _logger.info("Sent Ack", extra={"socket_message": message})
 
     async def error(self, message: str, sender: ServerConnection) -> None:
         """Send Error messages.
@@ -191,13 +182,23 @@ class MessageHandler:
         """
         message = ErrorReply(message=message).as_message()
         await sender.send(message)
-        _logger.info("Sent Error Message", extra={"message": message})
+        _logger.info("Sent Error Message", extra={"socket_message": message})
 
-    async def update(self):
+    async def update(self) -> None:
         """Send updates for the ui."""
-        message = UpdateMessage(self.game.update_info(), can_redo=self.can_redo, can_undo=self.can_undo).as_message()
-        await self.broadcast_players(message)
-        _logger.info("Sent update message.", extra={"message": message})
+        tasks: list[Awaitable[None]] = []
+        for player in self.players:
+            message = UpdateMessage(
+                game_data=self.game.update_info(),
+                can_redo=self.game.can_redo(player),
+                can_undo=self.game.can_undo(player),
+            ).as_message()
+            tasks.append(player.send(message))
+        await asyncio.gather(
+            *tasks,
+            return_exceptions=True,
+        )
+        _logger.info("Sent update message.", extra={"socket_message": self.game.update_info()})
 
     async def send_log(self, log_message: str, originator: ServerConnection, card: Card | None = None) -> None:
         """Send a log message to everyone.
@@ -215,7 +216,7 @@ class MessageHandler:
         message = log_message_instance.as_message()
         self.game_logs.insert(0, log_message_instance)
         await self.broadcast_players(message)
-        _logger.info("Sent Log message.", extra={"message": message})
+        _logger.info("Sent Log message.", extra={"socket_message": message})
 
     async def send_hellos(self) -> None:
         """Send a hello messages to a player who is connected but not a player.
@@ -224,7 +225,7 @@ class MessageHandler:
             websocket: A websocket.
 
         """
-        if len(self.game_states) == 0:
+        if self.game_states is not None:
             message = HelloMessage(game_available=False).as_message()
         else:
             message = HelloMessage(
@@ -233,13 +234,13 @@ class MessageHandler:
                 taken_colours=list(self.player_colours.values()),
             ).as_message()
         await self.broadcast(message)
-        _logger.info("Sent hello message.", extra={"message": message})
+        _logger.info("Sent hello message.", extra={"socket_message": message})
 
     ## --------------------------------
     ## Main splitter for the action
     ## --------------------------------
 
-    async def handle_message(self, message: str, sender: ServerConnection) -> str | None:
+    async def handle_message(self, message: str, sender: ServerConnection) -> None:
         """Decide how to handle a new message from a socket.
 
         Args:
@@ -254,108 +255,15 @@ class MessageHandler:
         try:
             json_message = json.loads(message)
         except ValueError:
-            error = json.dumps({"action": "reply", "succeeded": False, "error": "Invalid Json received"})
-            await sender.send(json.dumps(error))
-            _logger.warning("Returning error message", extra={"socket_message": error, "sender": sender})
-            return None
-        match json_message["action"]:
-            case "start_game":
-                await self.start_game(json_message, sender)
-            case "connect":
-                await self.connect(json_message, sender)
-            case "reconnect":
-                await self.reconnect(sender)
-            case "draw":
-                self.backup_game()
-                await self.draw(json_message, sender)
-                await self.update()
-            case "resolve_event":
-                self.backup_game()
-                await self.resolve_event(json_message, sender)
-                await self.update()
-            case "view_discard":
-                await self.view_discard(sender)
-            case "view_codex":
-                await self.view_codex(sender)
-            case "view_archive":
-                await self.view_archive(sender)
-            case "add_codex":
-                self.backup_game()
-                await self.add_codex(json_message, sender)
-                await self.update()
-            case "flip_codex":
-                self.backup_game()
-                await self.flip_codex(json_message, sender)
-                await self.update()
-            case "remove_codex":
-                self.backup_game()
-                await self.remove_codex(json_message, sender)
-                await self.update()
-            case "view_attached_codex":
-                await self.view_attached_codex(json_message, sender)
-            case "add_counter_codex":
-                self.backup_game()
-                await self.add_counter_codex(json_message, sender)
-                await self.update()
-            case "remove_counter_codex":
-                self.backup_game()
-                await self.remove_counter_codex(json_message, sender)
-                await self.update()
-            case "draw_terror":
-                self.backup_game()
-                await self.draw_terror(json_message, sender)
-                await self.update()
-            case "add_deck":
-                self.backup_game()
-                await self.add_deck(json_message, sender)
-                await self.update()
-            case "spread_clue":
-                self.backup_game()
-                await self.spread_clue(sender)
-                await self.update()
-            case "spread_doom":
-                self.backup_game()
-                await self.spread_doom(sender)
-                await self.update()
-            case "spread_terror":
-                self.backup_game()
-                await self.spread_terror(sender)
-                await self.update()
-            case "place_terror":
-                self.backup_game()
-                await self.place_terror(json_message, sender)
-                await self.update()
-            case "gate_burst":
-                self.backup_game()
-                await self.gate_burst(sender)
-                await self.update()
-            case "headline":
-                self.backup_game()
-                await self.headline(sender)
-                await self.update()
-            case "view_rumor":
-                await self.view_rumor(sender)
-            case "remove_rumor":
-                self.backup_game()
-                await self.remove_rumor(sender)
-                await self.update()
-            case "add_counter_rumor":
-                self.backup_game()
-                await self.add_counter_rumor(sender)
-                await self.update()
-            case "remove_counter_rumor":
-                self.backup_game()
-                await self.remove_counter_rumor(sender)
-                await self.update()
-            case "undo":
-                await self.undo(sender)
-                await self.update()
-            case "redo":
-                await self.redo(sender)
-                await self.update()
-            case _:
-                return "error"
-        return None
+            await self.error("Invalid Json received", sender)
+            return
+        try:
+            action = Commands(json_message["action"])
+            await getattr(self, action.value)(json_message, sender)
+        except ValueError:
+            await self.error("Invalid Command received", sender)
+        except AttributeError:
+            await self.error("Command not implemented!", sender)
 
     ## --------------------------------
     ## Functions for each action
@@ -382,22 +290,21 @@ class MessageHandler:
             settings = GameSettings(
                 scenario=Scenarios(json_message["scenario"]), expansions=int(json_message["expansions"])
             )
-            self.game_states.clear()
-            self.future_states.clear()
-            self.game_states.append(GameState(settings))
+            self.game_states = GameState(settings)
             await self.broadcast_players(Boot().as_message())
             self.players.clear()
             self.player_colours.clear()
             self.game_logs.clear()
-            message = UpdateMessage(self.game.update_info(), can_redo=False, can_undo=False).as_message()
+            message = UpdateMessage(game_data=self.game.update_info(), can_redo=False, can_undo=False).as_message()
 
             await sender.send(message)
             self.players[sender] = json_message["player_name"]
             self.player_colours[sender] = json_message["player_colour"]
-            _logger.info("Sent start game reply.", extra={"message": message})
+            _logger.info("Sent start game reply.", extra={"socket_message": message})
             await self.send_hellos()
             await self.send_log(
-                f"%s Started the Game! Scenario: {json_message['scenario']}; Expansion(s): {getExpansionText(int(json_message['expansions']))}",
+                f"%s Started the Game! Scenario: {json_message['scenario']}; "
+                f"Expansion(s): {get_expansion_text(int(json_message['expansions']))}",
                 sender,
             )
         except ValueError:
@@ -418,7 +325,7 @@ class MessageHandler:
 
         """
         try:
-            if len(self.game_states) == 0:
+            if self.game_states is not None:
                 await self.error("The game has not been started yet.", sender)
                 return
             if json_message["player_name"] in self.players.inv:
@@ -428,13 +335,11 @@ class MessageHandler:
                 await self.error("That color has already been chosen.", sender)
                 return
 
-            message = UpdateMessage(
-                self.game.update_info(), can_redo=self.can_redo, can_undo=self.can_undo
-            ).as_message()
+            message = UpdateMessage(game_data=self.game.update_info(), can_redo=False, can_undo=False).as_message()
             await sender.send(message)
             self.players[sender] = json_message["player_name"]
             self.player_colours[sender] = json_message["player_colour"]
-            _logger.info("Sent connect reply.", extra={"message": message})
+            _logger.info("Sent connect reply.", extra={"socket_message": message})
             await sender.send(AllLogMessage(self.game_logs).as_message())
 
             await self.send_hellos()
@@ -442,7 +347,7 @@ class MessageHandler:
         except ValueError:
             await self.error("Bad connection message", sender)
 
-    async def reconnect(self, sender: ServerConnection) -> None:
+    async def reconnect(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Reconnect a player to the game.
 
         Args:
@@ -453,7 +358,7 @@ class MessageHandler:
         if sender in self.players:
             message = ReconnectMessage(name=self.players[sender], colour=self.player_colours[sender]).as_message()
             await sender.send(message)
-            _logger.info("Sent reconnect reply.", extra={"message": message})
+            _logger.info("Sent reconnect reply.", extra={"socket_message": message})
             await self.send_log("%s has reconnected!", sender)
             return
         await self.error("Can't Reconnect. Please use the join button.", sender)
@@ -474,12 +379,13 @@ class MessageHandler:
         """
         try:
             neighbourhood = json_message["deck"]
-            card, identifier = self.game.draw_from_neighbourhood(Neighbourhood(neighbourhood))
+            card, identifier = self.game.draw_from_neighbourhood(Neighbourhood(neighbourhood), sender)
             state = CardViewState.EVENT if card.is_event else CardViewState.FACE_BACK
             message = ViewerReply(cards=[card.to_dict(state=state, identifier=identifier)]).as_message()
             await sender.send(message)
-            _logger.info("Sent draw reply.", extra={"message": message})
+            _logger.info("Sent draw reply.", extra={"socket_message": message})
             await self.send_log(f"%s has drawn from the {neighbourhood} deck: View Card", sender, card)
+            await self.update()
         except ValueError:
             await self.error("Bad draw message.", sender)
 
@@ -499,25 +405,24 @@ class MessageHandler:
         """
         try:
             identifier, passed = cast("str", json_message["identifier"]), cast("bool", json_message["passed"])
-            self.game.resolve_temporary_zone(identifier=identifier, passed=passed)
+            self.game.resolve_temporary_zone(identifier=identifier, passed=passed, sender=sender)
             await self.send_log(f"%s has {'passed' if passed else 'failed'} his event!", sender)
+            await self.update()
         except ValueError:
             await self.error("Bad resolve event message.", sender)
 
-    async def view_discard(self, sender: ServerConnection) -> None:
+    async def view_discard(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Handle a request to view the event discard pile.
 
         Args:
             sender: The client that sent the request.
 
         """
-        message = ViewerReply(
-            trigger="view_discard", cards=[card.to_dict() for card in self.game.event_deck_discard]
-        ).as_message()
+        message = ViewerReply(trigger="view_discard", cards=[card.to_dict() for card in self.game.discard]).as_message()
         await sender.send(message)
-        _logger.info("Sent view_discard reply.", extra={"message": message})
+        _logger.info("Sent view_discard reply.", extra={"socket_message": message})
 
-    async def view_codex(self, sender: ServerConnection) -> None:
+    async def view_codex(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Handle a request to view the codex.
 
         Args:
@@ -527,9 +432,9 @@ class MessageHandler:
         cards = self.game.get_codex()
         message = ViewerReply(trigger="view_codex", cards=cards).as_message()
         await sender.send(message)
-        _logger.info("Sent view_codex reply.", extra={"message": message})
+        _logger.info("Sent view_codex reply.", extra={"socket_message": message})
 
-    async def view_archive(self, sender: ServerConnection) -> None:
+    async def view_archive(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Handle a request to view the archive.
 
         Args:
@@ -539,7 +444,7 @@ class MessageHandler:
         cards = self.game.get_archive()
         message = ViewerReply(trigger="view_archive", cards=cards).as_message()
         await sender.send(message)
-        _logger.info("Sent view_archive reply.", extra={"message": message})
+        _logger.info("Sent view_archive reply.", extra={"socket_message": message})
 
     async def add_codex(self, json_message: Mapping[str, int], sender: ServerConnection) -> None:
         """Add a card to the codex.
@@ -556,8 +461,8 @@ class MessageHandler:
         """
         try:
             index = json_message["codex"]
-            card = self.game.archive_deck[index]
-            self.game.add_from_archive(index)
+            card = self.game.archive[index]
+            self.game.add_from_archive(index, sender)
         except KeyError:
             await self.error("Card already in Codex", sender)
             return
@@ -573,8 +478,9 @@ class MessageHandler:
                 await self.update()
             elif card.is_encounter:
                 await self.send_log(f"%s has added Codex card {index} to the {card.neighbourhood.value} deck.", sender)
-            return
-        await self.send_log(f"%s has added card {index} to the codex.", sender)
+        else:
+            await self.send_log(f"%s has added card {index} to the codex.", sender)
+        await self.update()
 
     async def flip_codex(self, json_message: Mapping[str, int], sender: ServerConnection) -> None:
         """Flip a card in the codex.
@@ -591,10 +497,11 @@ class MessageHandler:
         """
         index = json_message["codex"]
         try:
-            card = self.game.flip_codex(index)
+            card = self.game.flip_codex(index, sender)
             await self.ack("Codex card flipped!", sender)
             await self.send_log(f"%s has flipped Codex card {index}. View Card", sender, card)
             _logger.info("Sent flip_codex reply.")
+            await self.update()
         except ValueError:
             await self.error("Can't find card to flip!", sender)
 
@@ -613,10 +520,11 @@ class MessageHandler:
         """
         try:
             index = json_message["codex"]
-            self.game.return_to_archive(index)
+            self.game.return_to_archive(index, sender)
             await self.ack("Codex card moved to archive!", sender)
             await self.send_log(f"%s has returned Codex card {index} to the archive.", sender)
             _logger.info("Sent remove_codex reply.")
+            await self.update()
         except ValueError:
             await self.error("Bad remove codex message.", sender)
 
@@ -658,8 +566,9 @@ class MessageHandler:
 
         """
         try:
-            self.game.modify_counter_on_codex(json_message["codex"], 1)
+            self.game.modify_counter_on_codex(json_message["codex"], 1, sender)
             await self.ack("Counter Added", sender)
+            await self.update()
         except ValueError:
             await self.error("Invalid codex card number!", sender)
 
@@ -676,8 +585,9 @@ class MessageHandler:
 
         """
         try:
-            self.game.modify_counter_on_codex(json_message["codex"], -1)
+            self.game.modify_counter_on_codex(json_message["codex"], -1, sender)
             await self.ack("Counter Removed", sender)
+            await self.update()
         except ValueError:
             await self.error("Invalid codex card number!", sender)
 
@@ -696,11 +606,12 @@ class MessageHandler:
         """
         try:
             neighbourhood = Neighbourhood(json_message["deck"])
-            card = self.game.draw_terror_from_neighbourhood(Neighbourhood(neighbourhood))
+            card = self.game.draw_terror_from_neighbourhood(Neighbourhood(neighbourhood), sender)
             message = ViewerReply(cards=[card.to_dict()]).as_message()
             await sender.send(message)
             await self.send_log(f"%s has drawn a terror card the {neighbourhood.value} deck: View Card", sender, card)
             _logger.info("Sent draw_terror reply.")
+            await self.update()
         except EmptyDeckError:
             await self.error("No Terror cards were attached.", sender)
 
@@ -718,12 +629,21 @@ class MessageHandler:
 
         """
         neighbourhood = json_message["deck"]
-        self.game.add_neighbourhood(Neighbourhood(json_message["deck"]))
-        await self.ack("Deck added!", sender)
-        await self.send_log(f"%s has added the {neighbourhood} deck to the game!", sender)
+        doom_to_add = self.game.add_neighbourhood(Neighbourhood(json_message["deck"]), sender)
+        if doom_to_add == 0:
+            await self.ack("Deck added!", sender)
+            await self.send_log(f"%s has added the {neighbourhood} deck to the game!", sender)
+        else:
+            await self.ack("Deck added! Add {doom_to_add} doom tokens to the scenario sheet.", sender)
+            await self.send_log(
+                f"%s has added the {neighbourhood} deck to the game and "
+                f"added {doom_to_add} doom tokens to the scenario sheet!",
+                sender,
+            )
         _logger.info("Sent add_deck reply.")
+        await self.update()
 
-    async def spread_clue(self, sender: ServerConnection) -> None:
+    async def spread_clue(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Spread a clue.
 
         Args:
@@ -731,20 +651,21 @@ class MessageHandler:
 
         """
         try:
-            card = self.game.spread_clue()
+            card = self.game.spread_clue(sender)
             message = ViewerReply(cards=[card.to_dict(state=CardViewState.BACK_FACE)]).as_message()
             await sender.send(message)
-            _logger.info("Sent spread clue reply.", extra={"message": message})
+            _logger.info("Sent spread clue reply.", extra={"socket_message": message})
             await self.send_log(f"%s has spread a clue to the {card.neighbourhood.value} deck: View Card", sender, card)
         except EmptyDeckError:
             message = ViewerReply(cards=[]).as_message()
             await sender.send(message)
-            _logger.info("Sent spread clue reply.", extra={"message": message})
+            _logger.info("Sent spread clue reply.", extra={"socket_message": message})
             await self.send_log(
                 "%s tried to spread a clue, but the Event deck was empty! Add a doom to the sheet instead.", sender
             )
+        await self.update()
 
-    async def spread_doom(self, sender: ServerConnection) -> None:
+    async def spread_doom(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Spread doom.
 
         Args:
@@ -752,20 +673,21 @@ class MessageHandler:
 
         """
         try:
-            card = self.game.spread_doom()
+            card = self.game.spread_doom(sender)
             message = ViewerReply(cards=[card.to_dict()]).as_message()
             await sender.send(message)
-            _logger.info("Sent spread doom reply.", extra={"message": message})
+            _logger.info("Sent spread doom reply.", extra={"socket_message": message})
             await self.send_log(f"%s has spread doom to the {card.neighbourhood.value} deck: View Card", sender, card)
         except EmptyDeckError:
             message = ViewerReply(cards=[]).as_message()
             await sender.send(message)
-            _logger.info("Sent spread clue reply.", extra={"message": message})
+            _logger.info("Sent spread clue reply.", extra={"socket_message": message})
             await self.send_log(
                 "%s tried to spread doom, but the Event deck was empty! Add a doom to the sheet instead.", sender
             )
+        await self.update()
 
-    async def spread_terror(self, sender: ServerConnection) -> None:
+    async def spread_terror(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Spread terror.
 
         Args:
@@ -773,7 +695,7 @@ class MessageHandler:
 
         """
         try:
-            result = self.game.spread_terror()
+            result = self.game.spread_terror(sender)
             await self.ack("Terror Spread!", sender)
             if isinstance(result, Neighbourhood):
                 await self.send_log(
@@ -784,6 +706,7 @@ class MessageHandler:
                     f"%s has spread terror to the {result.neighbourhood.value}: View Card", sender, result
                 )
             _logger.info("Successfully spread terror.", extra={"result": result})
+            await self.update()
         except EmptyDeckError:
             await self.ack("No Terror Cards Remaining!", sender)
             await self.send_log(
@@ -809,24 +732,25 @@ class MessageHandler:
         """
         try:
             neighbourhood = json_message["deck"]
-            result = self.game.place_terror(Neighbourhood(neighbourhood))
+            result = self.game.place_terror(Neighbourhood(neighbourhood), sender)
             await self.ack("Terror Spread!", sender)
             await self.send_log(f"%s has spread terror to the {neighbourhood} neighbourhood!", sender)
             _logger.info("Successfully spread terror.", extra={"result": result})
+            await self.update()
         except EmptyDeckError:
             await self.ack("No Terror Cards Remaining!", sender)
             await self.send_log(
                 "%s tried to spread terror, but the Terror deck was empty! Add a doom to the sheet instead.", sender
             )
 
-    async def gate_burst(self, sender: ServerConnection) -> None:
+    async def gate_burst(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Resolve a gate burst.
 
         Args:
             sender: The client that sent the request.
 
         """
-        card = self.game.gate_burst()
+        card = self.game.gate_burst(sender)
         if card is None:
             message = ViewerReply(cards=[]).as_message()
             await sender.send(message)
@@ -837,9 +761,10 @@ class MessageHandler:
             message = ViewerReply(cards=[card.to_dict(state=CardViewState.BACK_FACE)]).as_message()
             await sender.send(message)
             await self.send_log(f"%s caused a gate burst in {card.neighbourhood.value}: View Card", sender, card)
-        _logger.info("Sent gate burst reply.", extra={"message": message})
+        _logger.info("Sent gate burst reply.", extra={"socket_message": message})
+        await self.update()
 
-    async def headline(self, sender: ServerConnection) -> None:
+    async def headline(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Draw a headline.
 
         Args:
@@ -847,13 +772,14 @@ class MessageHandler:
 
         """
         try:
-            card = self.game.draw_headline()
+            card = self.game.draw_headline(sender)
             message = ViewerReply(cards=[card.to_dict()]).as_message()
             await sender.send(message)
-            cards_remaining = len(self.game.headline_deck)
+            cards_remaining = len(self.game.headline)
             await self.send_log(
                 f"%s has read a headline. Only {cards_remaining} headlines left: View Card", sender, card
             )
+            await self.update()
         except EmptyDeckError:
             message = ViewerReply(cards=[]).as_message()
             await sender.send(message)
@@ -861,17 +787,17 @@ class MessageHandler:
                 "%s tried to read a headline, but the deck was empty. Add a doom to the sheet instead.", sender
             )
 
-        _logger.info("Sent headline reply.", extra={"message": message})
+        _logger.info("Sent headline reply.", extra={"socket_message": message})
 
-    async def view_rumor(self, sender: ServerConnection) -> None:
+    async def view_rumor(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Draw a headline.
 
         Args:
             sender: The client that sent the request.
 
         """
-        if self.game.active_rumor != None:
-            card = self.game.active_rumor
+        if len(self.game.rumor) > 0:
+            card = self.game.rumor[0]
             message = ViewerReply(trigger="view_rumor", cards=[card.to_dict(state=CardViewState.RUMOR)]).as_message()
             await sender.send(message)
             _logger.info("Successfully view_rumor.")
@@ -879,94 +805,81 @@ class MessageHandler:
 
         await self.error("There were no active rumors!", sender)
 
-    async def remove_rumor(self, sender: ServerConnection) -> None:
+    async def remove_rumor(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Draw a headline.
 
         Args:
             sender: The client that sent the request.
 
         """
-        if self.game.active_rumor != None:
-            self.game.active_rumor = None
-            await self.ack(message="Removed Rumor!", sender=sender)
-            await self.send_log("%s has dismissed the rumor.", sender)
-            _logger.info("Successfully remove_rumor.")
+        if len(self.game.rumor) == 0:
+            await self.error("There were no active rumors!", sender)
             return
-        await self.error("There were no active rumors!", sender)
+        self.game.clear_rumor(sender)
+        await self.ack(message="Removed Rumor!", sender=sender)
+        await self.send_log("%s has dismissed the rumor.", sender)
+        _logger.info("Successfully remove_rumor.")
+        await self.update()
 
-    async def add_counter_rumor(self, sender: ServerConnection) -> None:
+    async def add_counter_rumor(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Add a counter to a codex card.
 
         Args:
             sender: The client that sent the request.
 
         """
-        if self.game.active_rumor is None:
+        if len(self.game.rumor) == 0:
             await self.error("No active rumor!", sender)
             return
-        self.game.active_rumor.counters += 1
+        self.game.modify_counter_on_rumor(1, sender)
         await self.ack("Counter Added", sender)
         await self.send_log("%s added a counter to the rumor.", sender)
+        await self.update()
 
-    async def remove_counter_rumor(self, sender: ServerConnection) -> None:
+    async def remove_counter_rumor(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Remove a counter to a codex card.
 
         Args:
             sender: The client that sent the request.
 
         """
-        if self.game.active_rumor is None:
+        if len(self.game.rumor) == 0:
             await self.error("No active rumor!", sender)
             return
-        if self.game.active_rumor.counters <= 0:
+        if self.game.rumor[0].counters == 0:
             await self.error("No counters to remove!", sender)
             return
-        self.game.active_rumor.counters -= 1
+        self.game.modify_counter_on_rumor(-1, sender)
         await self.ack("Counter Removed", sender)
         await self.send_log("%s removed a counter to the rumor.", sender)
+        await self.update()
 
-    async def undo(self, sender: ServerConnection) -> None:
+    async def undo(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Handle an undo request.
 
         Args:
             sender: The client that sent the request.
 
         """
-        if len(self.game_states) <= 1:
-            await self.error("Undo is unavailable", sender)
-            return
-
-        cur_states = deepcopy(self.game_states)
-        cur_futures = deepcopy(self.future_states)
-
-        state = self.game_states.pop()
-        if state.is_stable():
-            self.future_states.append(state)
         try:
-            while not self.game_states[-1].is_stable():
-                self.game_states.pop()
+            self.game.undo(sender)
             await self.ack("Undo successful!", sender)
             await self.send_log("%s has pressed the undo Button!", sender)
-        except IndexError:
-            await self.error("There were no good states to backup to!", sender)
-            self.game_states = cur_states
-            self.future_states = cur_futures
+            await self.update()
+        except ValueError:
+            await self.error("Unable to undo!", sender)
 
-    async def redo(self, sender: ServerConnection) -> None:
+    async def redo(self, _: Mapping[str, str], sender: ServerConnection) -> None:
         """Handle an redo request.
 
         Args:
             sender: The client that sent the request.
 
         """
-        if len(self.future_states) == 0:
-            await self.error("Redo is unavailable", sender)
-            return
-        self.game_states.append(self.future_states.pop(0))
-        await self.ack("Redo successful!", sender)
-        await self.send_log("%s has pressed the redo Button!", sender)
-
-    def backup_game(self) -> None:
-        """Create a backup of the game state to allow for undo and redos."""
-        self.game_states.append(deepcopy(self.game_states[-1]))
-        self.future_states = []
+        try:
+            self.game.redo(sender)
+            await self.ack("Undo successful!", sender)
+            await self.send_log("%s has pressed the redo Button!", sender)
+            await self.update()
+        except ValueError:
+            await self.error("Unable to redo!", sender)
